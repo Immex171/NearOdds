@@ -4,8 +4,8 @@
 //! claim full NEP-145 compliance.
 //!
 //! Registration prepays a fixed upper bound on the bytes used by one account
-//! record plus one pending-withdrawal record, so later operations (including
-//! the withdrawal request and its callback) never grow storage unfunded.
+//! record, one pending-withdrawal record and up to `MAX_OPEN_OFFERS` open
+//! offers (Milestone 2), so later operations never grow storage unfunded.
 
 use near_sdk::{env, near, require, AccountId, NearToken, Promise};
 
@@ -15,10 +15,11 @@ use crate::state::ContractExt;
 use crate::state::{Account, Contract, SettlementOutcome};
 use crate::types::{StorageBalance, StorageBalanceBounds};
 
-/// Upper bound on bytes used per registered account (account record + pending
-/// withdrawal record, including key and per-record overhead). The measured
-/// real usage is asserted below this in the Sandbox tests.
-pub const STORAGE_BOUND_BYTES: u128 = 512;
+/// Upper bound on bytes used per registered account (account record incl. its
+/// open-offer id list + pending withdrawal record + 10 open offers, each with
+/// key and per-record overhead). Measured usage is asserted below this in the
+/// Sandbox tests.
+pub const STORAGE_BOUND_BYTES: u128 = 4096;
 
 pub fn storage_cost() -> NearToken {
     env::storage_byte_cost().saturating_mul(STORAGE_BOUND_BYTES)
@@ -65,6 +66,10 @@ impl Contract {
                 last_withdrawal_id: 0,
                 last_withdrawal_amount: 0,
                 last_withdrawal_outcome: SettlementOutcome::None,
+                reserved_collateral: 0,
+                yes_reserved: 0,
+                no_reserved: 0,
+                open_offers: Vec::new(),
             },
         );
         self.totals.registered_accounts = self

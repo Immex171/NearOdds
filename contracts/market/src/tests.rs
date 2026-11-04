@@ -13,6 +13,8 @@ use crate::state::{Contract, SettlementOutcome};
 use crate::storage::storage_cost;
 use crate::types::WithdrawalStatus;
 
+mod trading;
+
 const ONE: u128 = 1_000_000;
 const CUTOFF: u64 = 1_000_000;
 const MID: &str = "mkt-1";

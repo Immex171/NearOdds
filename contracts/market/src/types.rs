@@ -4,7 +4,7 @@
 use near_sdk::json_types::{U128, U64};
 use near_sdk::{near, AccountId, NearToken};
 
-use crate::state::SettlementOutcome;
+use crate::state::{Outcome, SettlementOutcome, Side};
 
 #[near(serializers=[json])]
 pub struct ConfigView {
@@ -16,6 +16,24 @@ pub struct ConfigView {
     pub decimals: u8,
     /// yoctoNEAR charged by `storage_deposit` for one account.
     pub storage_cost_per_account: NearToken,
+    pub trading: TradingParams,
+}
+
+/// Trading precision and limits. All integers are decimal strings except
+/// `max_open_offers_per_account` and `fee_bps`.
+#[near(serializers=[json])]
+pub struct TradingParams {
+    /// Share base units per whole share; also the divisor in `cost = q*p/price_scale`.
+    pub price_scale: U128,
+    pub price_tick: U128,
+    pub min_price: U128,
+    pub max_price: U128,
+    /// Quantities must be multiples of this (share base units).
+    pub quantity_lot: U128,
+    pub min_order_quantity: U128,
+    pub max_open_offers_per_account: u32,
+    /// Trading fee in basis points. Always 0 in this milestone.
+    pub fee_bps: u32,
 }
 
 #[near(serializers=[json])]
@@ -26,6 +44,9 @@ pub struct MarketView {
     pub split_cutoff_ns: U64,
     /// True while `block_timestamp < split_cutoff_ns`.
     pub split_open: bool,
+    /// Same cutoff as splitting: offers can be created/filled before it.
+    pub trading_cutoff_ns: U64,
+    pub trading_open: bool,
     pub collateral_token_id: AccountId,
     pub outstanding_yes: U128,
     pub outstanding_no: U128,
@@ -53,9 +74,17 @@ pub struct WithdrawalView {
 pub struct AccountView {
     pub account_id: AccountId,
     pub storage_deposit: NearToken,
+    /// Spendable / withdrawable collateral.
     pub available_collateral: U128,
+    /// Collateral locked behind open Buy offers.
+    pub reserved_collateral: U128,
+    /// AVAILABLE shares (can be offered, merged).
     pub yes: U128,
     pub no: U128,
+    /// Shares locked behind open Sell offers.
+    pub reserved_yes: U128,
+    pub reserved_no: U128,
+    pub open_offer_ids: Vec<U64>,
     pub pending_withdrawal: Option<WithdrawalView>,
 }
 
@@ -63,8 +92,11 @@ pub struct AccountView {
 pub struct PositionView {
     pub account_id: AccountId,
     pub market_id: String,
+    /// Available shares.
     pub yes: U128,
     pub no: U128,
+    pub reserved_yes: U128,
+    pub reserved_no: U128,
 }
 
 /// INTERNAL accounting counters. They are not a token balance: compare
@@ -78,8 +110,13 @@ pub struct TotalsView {
     /// Withdrawals scheduled but not settled (already removed from available).
     pub pending_withdrawals: U128,
     pub registered_accounts: U64,
-    /// `available_collateral + market_backing`. After all async operations
-    /// settle, the token contract's balance of this account must be >= this.
+    pub reserved_collateral: U128,
+    pub reserved_yes: U128,
+    pub reserved_no: U128,
+    pub open_offers: U64,
+    /// `available_collateral + reserved_collateral + market_backing`. After all
+    /// async operations settle, the token contract's balance of this account
+    /// must be >= this.
     pub settled_escrow_requirement: U128,
 }
 
@@ -103,4 +140,66 @@ impl From<SettlementOutcome> for Option<WithdrawalStatus> {
             SettlementOutcome::FailedRestored => Some(WithdrawalStatus::FailedRestored),
         }
     }
+}
+
+/// Derived lifecycle shown by views. Fully filled and cancelled offers are
+/// removed from storage, so they never appear here (see docs).
+#[near(serializers=[json])]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OfferStatus {
+    Open,
+    PartiallyFilled,
+    /// Expiry passed or trading closed. Cannot be filled; the owner can still cancel.
+    Expired,
+}
+
+#[near(serializers=[json])]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FillStatus {
+    PartiallyFilled,
+    Filled,
+}
+
+#[near(serializers=[json])]
+pub struct OfferView {
+    /// Opaque id.
+    pub offer_id: U64,
+    pub market_id: String,
+    pub owner_id: AccountId,
+    pub outcome: Outcome,
+    pub side: Side,
+    /// Collateral base units per whole share.
+    pub price: U128,
+    /// Original quantity (share base units).
+    pub quantity: U128,
+    pub filled_quantity: U128,
+    pub remaining_quantity: U128,
+    /// Collateral still locked (Buy offers), else "0".
+    pub reserved_collateral: U128,
+    /// Shares still locked (Sell offers), else "0".
+    pub reserved_shares: U128,
+    pub expires_at_ns: Option<U64>,
+    pub created_at_ns: U64,
+    pub status: OfferStatus,
+    /// True when a fill would currently be accepted (status is not Expired).
+    pub fillable: bool,
+}
+
+#[near(serializers=[json])]
+pub struct FillResult {
+    pub offer_id: U64,
+    /// Share base units exchanged.
+    pub quantity: U128,
+    /// Collateral base units exchanged (exact).
+    pub collateral_amount: U128,
+    pub remaining_quantity: U128,
+    pub status: FillStatus,
+}
+
+#[near(serializers=[json])]
+pub struct CancelResult {
+    pub offer_id: U64,
+    pub remaining_quantity: U128,
+    pub released_collateral: U128,
+    pub released_shares: U128,
 }

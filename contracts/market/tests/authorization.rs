@@ -58,9 +58,8 @@ async fn no_admin_or_future_feature_methods_exist() {
         "deposit",
         "admin_withdraw",
         "sweep",
-        "create_offer",
         "take_offer",
-        "cancel_offer",
+        "list_orders",
         "resolve_market",
         "redeem",
         "create_market",
@@ -92,7 +91,7 @@ async fn views_report_configuration() {
     let cfg: serde_json::Value = e.market.view("get_config").await.unwrap().json().unwrap();
     assert_eq!(cfg["decimals"], 6);
     assert_eq!(cfg["deposit_msg"], "deposit");
-    assert_eq!(cfg["schema_version"], 1);
+    assert_eq!(cfg["schema_version"], 2);
     let m: serde_json::Value = e
         .market
         .view("get_market")

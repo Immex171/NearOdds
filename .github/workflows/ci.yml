@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # near-workspaces -> near-jsonrpc-client -> native-tls -> openssl-sys
+      # needs pkg-config and the OpenSSL development headers.
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      # rust-toolchain.toml pins the compiler and adds rustfmt, clippy and the wasm target.
+      - name: Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-near
+        run: cargo install cargo-near --locked --no-default-features
+
+      - name: Check prerequisites
+        run: bash scripts/check-prereqs.sh
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (host, incl. tests)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (wasm, normal and failure-injection builds)
+        run: |
+          cargo clippy --target wasm32-unknown-unknown -p nearodds-market -p test-collateral -- -D warnings
+          cargo clippy --target wasm32-unknown-unknown -p nearodds-market --features test-failure-injection -- -D warnings
+
+      - name: Build Wasm
+        run: bash scripts/build-wasm.sh
+
+      - name: Unit and Sandbox tests
+        run: NEARODDS_SKIP_WASM_BUILD=1 cargo test --workspace
+
+      - name: Upload Wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: |
+            target/wasm/market.wasm
+            target/wasm/test_collateral.wasm

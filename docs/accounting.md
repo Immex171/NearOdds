@@ -1,7 +1,8 @@
-# NearOdds accounting model (Milestone 1)
+# NearOdds accounting model (Milestones 1 and 2)
 
 Scope: one fixed binary market, one approved NEP-141 collateral token, deposit,
-split, merge, withdraw. No trading, resolution or redemption exists yet.
+split, merge, withdraw (Milestone 1) and fully funded onchain offers (Milestone 2,
+see the Trading section). Resolution and redemption do not exist yet.
 
 ## Units
 
@@ -97,7 +98,7 @@ Internal counters are not a token balance. After every asynchronous operation
 has settled:
 
 ```
-ft_balance_of(market)  >=  available_collateral + market_backing      (= settled_escrow_requirement)
+ft_balance_of(market)  >=  available_collateral + reserved_collateral + market_backing   (= settled_escrow_requirement)
 ```
 
 Anything above that is **unallocated surplus** (e.g. a direct `ft_transfer`
@@ -112,8 +113,9 @@ callback has run, the transfer's outcome is reflected in both numbers.
 ## Storage
 
 Native NEAR, separate from collateral. `storage_deposit` charges a fixed
-`512 bytes * storage_byte_cost` per account — an upper bound for one account
-record plus one pending-withdrawal record. No per-call growth: records are
+`4096 bytes * storage_byte_cost` per account — an upper bound for one account
+record (with its open-offer id list), one pending-withdrawal record and 10 open
+offers (measured worst case: 2,619 bytes). No per-call growth: records are
 fixed size and created at registration (account) or inside the already-prepaid
 bound (pending), and the pending record is removed when settled. Excess
 attached NEAR is refunded; re-registering refunds everything. Tests assert the
@@ -131,3 +133,46 @@ measured growth stays within the bound. No operation iterates over accounts.
   front-running.
 * The test collateral's `mint` belongs to the fixture owner and is not part of
   the market contract.
+
+## Trading (Milestone 2)
+
+Offers are **fully funded when created** and settle against the internal ledger only.
+
+### Reserved vs available
+
+Each account has separate `available` and `reserved` amounts for collateral, YES and NO.
+Aggregates: `reserved_collateral`, `reserved_yes`, `reserved_no`, `open_offers`.
+
+| Operation | Available collateral | Reserved collateral | Available shares | Reserved shares |
+| - | - | - | - | - |
+| Create **Buy** (qty q at p) | `-q*p/1e6` | `+q*p/1e6` | | |
+| Create **Sell** (qty q) | | | `-q` | `+q` |
+| Fill **Sell** by taker | taker `-cost`, maker `+cost` | | taker `+q` | maker `-q` |
+| Fill **Buy** by taker | taker `+cost` | maker `-cost` | taker `-q`, maker `+q` | |
+| Cancel (remaining r) | Buy: `+r*p/1e6` | Buy: `-r*p/1e6` | Sell: `+r` | Sell: `-r` |
+
+Only *available* amounts can be offered, merged, split or withdrawn. A fill debits and credits the
+same `cost`, delivers the same `q` it removes, and creates or destroys nothing: `available_collateral +
+reserved_collateral` summed over all accounts is unchanged by trading, `outstanding_yes/no` and
+`market_backing` are unchanged (reserved shares are part of the outstanding supply, never added to it),
+and `reserved_yes <= outstanding_yes`, `reserved_no <= outstanding_no` are checked after every operation.
+
+### Exact pricing
+
+`cost = q * p / 1_000_000` with price a multiple of 10,000 and quantity a multiple of 100 is always an
+integer, so there is no per-fill rounding: splitting a trade into many fills costs exactly what one fill
+costs, nobody gets free shares, and a Buy offer's reservation is exactly consumed by fills plus the
+cancellation release. Inexact costs are rejected with an internal error rather than rounded. **Fees are zero.**
+
+### Offer lifecycle and cleanup
+
+Open and partially filled offers hold storage that the maker prepaid at registration (max 10 open offers).
+Fully filled and cancelled offers are deleted, freeing the slot. Cancellation works at any time, including
+after expiry or the trading cutoff, and releases exactly the unfilled remainder (never anything consumed by
+earlier fills). Fills and creation stop at the cutoff, which is the same instant that closes splitting.
+
+### Withdrawals are unchanged
+
+Withdrawal still debits **available** collateral only, so reserved collateral cannot be withdrawn. The
+callback policy is unchanged: a verified token failure restores the current available balance once; a
+callback that itself fails leaves the withdrawal `Pending` with no automatic resend or restoration.

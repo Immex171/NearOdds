@@ -7,6 +7,8 @@
 use near_sdk::json_types::{U128, U64};
 use near_sdk::{near, AccountId};
 
+use crate::state::{Outcome, Side};
+
 #[near(event_json(standard = "nearodds_market"))]
 pub enum MarketEvent {
     #[event_version("1.0.0")]
@@ -51,5 +53,48 @@ pub enum MarketEvent {
         account_id: AccountId,
         withdrawal_id: U64,
         amount: U128,
+    },
+    /// A fully funded offer was created. `reserved_collateral` (Buy) or
+    /// `reserved_shares` (Sell) is what was locked.
+    #[event_version("1.0.0")]
+    OfferCreated {
+        offer_id: U64,
+        owner_id: AccountId,
+        market_id: String,
+        outcome: Outcome,
+        side: Side,
+        price: U128,
+        quantity: U128,
+        expires_at_ns: Option<U64>,
+        reserved_collateral: U128,
+        reserved_shares: U128,
+    },
+    /// `quantity` shares moved against `collateral_amount` at `price`.
+    /// `maker_side` is the offer's side. `remaining_quantity == 0` means the
+    /// offer is now fully filled and removed.
+    #[event_version("1.0.0")]
+    OfferFilled {
+        offer_id: U64,
+        maker_id: AccountId,
+        taker_id: AccountId,
+        market_id: String,
+        outcome: Outcome,
+        maker_side: Side,
+        price: U128,
+        quantity: U128,
+        collateral_amount: U128,
+        remaining_quantity: U128,
+    },
+    /// The unfilled remainder was released and the offer removed.
+    #[event_version("1.0.0")]
+    OfferCancelled {
+        offer_id: U64,
+        owner_id: AccountId,
+        market_id: String,
+        outcome: Outcome,
+        side: Side,
+        remaining_quantity: U128,
+        released_collateral: U128,
+        released_shares: U128,
     },
 }

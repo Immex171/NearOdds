@@ -15,7 +15,7 @@ pub const ONE: u128 = 1_000_000;
 pub const MID: &str = "mkt-1";
 pub const YOCTO: NearToken = NearToken::from_yoctonear(1);
 pub const MAX_GAS: Gas = Gas::from_tgas(300);
-pub const STORAGE_BOUND_BYTES: u64 = 512;
+pub const STORAGE_BOUND_BYTES: u64 = 4096;
 
 /// Decimal-string base units for `n` whole tokens/shares.
 pub fn tok(n: u128) -> String {
@@ -343,6 +343,82 @@ impl Env {
 
     pub async fn total(&self, key: &str) -> u128 {
         self.totals().await[key].as_str().unwrap().parse().unwrap()
+    }
+
+    pub async fn create_offer(
+        &self,
+        who: &Account,
+        outcome: &str,
+        side: &str,
+        price: u128,
+        quantity: u128,
+    ) -> ExecutionFinalResult {
+        self.call_market(
+            who,
+            "create_offer",
+            json!({
+                "market_id": MID, "outcome": outcome, "side": side,
+                "price": price.to_string(), "quantity": quantity.to_string()
+            }),
+        )
+        .await
+    }
+
+    pub async fn fill_offer(
+        &self,
+        who: &Account,
+        id: &str,
+        quantity: u128,
+    ) -> ExecutionFinalResult {
+        self.call_market(
+            who,
+            "fill_offer",
+            json!({ "offer_id": id, "quantity": quantity.to_string() }),
+        )
+        .await
+    }
+
+    pub async fn cancel_offer(&self, who: &Account, id: &str) -> ExecutionFinalResult {
+        self.call_market(who, "cancel_offer", json!({ "offer_id": id }))
+            .await
+    }
+
+    /// Creates an offer, asserts success and returns its id (decimal string).
+    pub async fn new_offer(
+        &self,
+        who: &Account,
+        outcome: &str,
+        side: &str,
+        price: u128,
+        quantity: u128,
+    ) -> String {
+        let r = ok(self.create_offer(who, outcome, side, price, quantity).await);
+        let v: Value = r.json().unwrap();
+        v["offer_id"].as_str().unwrap().to_string()
+    }
+
+    pub async fn get_offer(&self, id: &str) -> Value {
+        self.market
+            .view("get_offer")
+            .args_json(json!({ "offer_id": id }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
+    /// `(available_collateral, reserved_collateral, yes, reserved_yes, no, reserved_no)`.
+    pub async fn full(&self, id: &near_workspaces::AccountId) -> [u128; 6] {
+        let a = self.account(id).await;
+        let n = |k: &str| a[k].as_str().unwrap().parse::<u128>().unwrap();
+        [
+            n("available_collateral"),
+            n("reserved_collateral"),
+            n("yes"),
+            n("reserved_yes"),
+            n("no"),
+            n("reserved_no"),
+        ]
     }
 
     pub async fn withdrawal(&self, id: &near_workspaces::AccountId) -> Value {

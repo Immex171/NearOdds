@@ -24,7 +24,8 @@ test-token Wasm, moving real tokens. No testnet account is needed.
 | Do | See |
 | - | - |
 | `bash scripts/build-wasm.sh` | `target/wasm/{market,market_failure_injection,test_collateral}.wasm` listed |
-| `cargo test -p nearodds-market --lib` | `47 passed` |
+| `cargo test -p nearodds-market --lib` | `78 passed` (47 Milestone 1 + 31 trading) |
+| `cargo test --workspace` | 78 unit + 33 Sandbox tests pass, 1 ignored (the testnet smoke test) |
 | `cargo test -p nearodds-market --test collateral_flow -- acceptance_scenario_and_complete_exit --nocapture` | `1 passed` |
 
 The acceptance test performs, with Alice funded with 100 test tokens:
@@ -55,7 +56,7 @@ Other scenarios, each a named test (`cargo test -p nearodds-market -- <name>`):
 | Unauthorized / wrong-id / replayed callback | `private_callback_rejects_outside_callers`, unit tests `callback_*`, and the test above |
 | Storage funding and bounds | `storage_funding_is_bounded_and_enforced` |
 
-## Manual walkthrough on testnet (NOT executed for this milestone)
+## Manual walkthrough on testnet (NOT executed)
 
 See README "Testnet deployment". The same calls the tests make, from a shell:
 
@@ -75,3 +76,40 @@ near contract call-function as-read-only $MARKET get_account json-args '{"accoun
 
 These command lines use `near-cli-rs` syntax from memory of its interactive
 mode and were **not** run here; check `near --help` for your installed version.
+
+## Milestone 2: trading demo
+
+`cargo test -p nearodds-market --test trading -- acceptance_scenario_with_real_tokens --nocapture` runs, with real
+tokens, the zero-fee scenario below (prices per share, quantities in whole shares):
+
+| Step | Result |
+| - | - |
+| Alice deposits and splits 100 | 100 YES, 100 NO, backing 100 |
+| Bob and Carol deposit 10 each | |
+| Alice `create_offer` Yes/Sell 20 @ 0.60 | 20 YES reserved |
+| Bob `fill_offer` 8, Carol `fill_offer` 5 | pay 4.80 and 3.00 |
+| Alice `cancel_offer` | the unfilled 7 YES return |
+| Bob `create_offer` Yes/Sell 3 @ 0.70, Carol fills | 2.10 changes hands |
+
+| Account | Collateral | YES | NO |
+| - | -: | -: | -: |
+| Alice | 7.80 | 87 | 100 |
+| Bob | 7.30 | 5 | 0 |
+| Carol | 4.90 | 8 | 0 |
+
+No reserves remain; backing is still 100 for 100 YES + 100 NO and 20 collateral is available to users. The test
+then merges and withdraws everyone and checks the token balances (Alice 94.8, Bob 7.3, Carol 4.9, market 13).
+
+| Scenario | Test |
+| - | - |
+| Validation, authorization, reuse of reserved assets | `validation_authorization_and_reuse_errors_change_nothing` |
+| Buy offer partial fill, exact return on cancel | `buy_offer_partial_fill_and_exact_return_on_cancel` |
+| One fill == many fills; smallest tick and lot | `precision_one_fill_equals_many_fills` |
+| Cutoff: no create/fill, cancel still works | `trading_closes_at_cutoff_but_makers_can_always_cancel` |
+| Fill vs cancel race | `fill_and_cancel_race_never_double_spends` |
+| Trading with deposit, merge, withdrawal in flight | `trading_interleaved_with_withdrawal_and_deposit` |
+| Storage prepaid and bounded (measured 2,619 of 4,096 bytes) | `offer_storage_is_prepaid_and_bounded` |
+| Pagination and account offers | `views_paginate_offers_and_report_account_offers` |
+| Same flow on testnet | `scripts/testnet-smoke.sh` (see `docs/testnet.md`; not run) |
+
+Unit tests for the same rules (including per-fill exactness and expiry) are in `contracts/market/src/tests/trading.rs`.

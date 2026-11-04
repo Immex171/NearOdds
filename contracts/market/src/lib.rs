@@ -2,8 +2,9 @@
 //!
 //! One fixed binary market, one approved NEP-141 collateral token, funded
 //! account registration, deposits, complete-set split/merge and withdrawals.
-//! NOT implemented (and deliberately not stubbed): offers/trading, resolution,
-//! redemption, pausing, upgrades by an in-contract admin.
+//! Milestone 2 adds fully funded fixed-price offers (create / fill / cancel).
+//! NOT implemented (and deliberately not stubbed): resolution, redemption,
+//! market creation, pausing, upgrades by an in-contract admin.
 //!
 //! Trust note: there is no admin method that sets balances, mints shares or
 //! moves the reserve. Whoever holds the full-access key of the deployed
@@ -15,6 +16,7 @@ pub mod balances;
 pub mod collateral;
 pub mod errors;
 pub mod events;
+pub mod offers;
 pub mod positions;
 pub mod state;
 pub mod storage;
@@ -25,7 +27,7 @@ pub mod views;
 mod tests;
 
 use near_sdk::json_types::U64;
-use near_sdk::store::LookupMap;
+use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{env, near, require, AccountId};
 
 use crate::errors::ERR_BAD_INIT;
@@ -71,6 +73,13 @@ impl Contract {
             next_withdrawal_id: 0,
             accounts: LookupMap::new(StorageKey::Accounts),
             withdrawals: LookupMap::new(StorageKey::Withdrawals),
+            offers: [
+                IterableMap::new(StorageKey::Offers(0)),
+                IterableMap::new(StorageKey::Offers(1)),
+                IterableMap::new(StorageKey::Offers(2)),
+                IterableMap::new(StorageKey::Offers(3)),
+            ],
+            next_offer_seq: 0,
         }
     }
 }

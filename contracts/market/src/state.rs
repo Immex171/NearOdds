@@ -3,16 +3,18 @@
 //! nanoseconds.
 
 use near_sdk::borsh::BorshSerialize;
-use near_sdk::store::LookupMap;
+use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{near, AccountId, BorshStorageKey, PanicOnDefault};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 pub enum StorageKey {
     Accounts,
     Withdrawals,
+    /// One map per (outcome, side) bucket; see `offers::bucket`.
+    Offers(u8),
 }
 
 /// The single, immutable market hosted by this deployment.
@@ -52,6 +54,14 @@ pub struct Account {
     pub last_withdrawal_id: u64,
     pub last_withdrawal_amount: u128,
     pub last_withdrawal_outcome: SettlementOutcome,
+    /// Collateral locked behind this account's open Buy offers.
+    pub reserved_collateral: u128,
+    /// YES shares locked behind open Sell offers.
+    pub yes_reserved: u128,
+    /// NO shares locked behind open Sell offers.
+    pub no_reserved: u128,
+    /// Ids of this account's open offers (bounded by `MAX_OPEN_OFFERS`).
+    pub open_offers: Vec<u64>,
 }
 
 /// A withdrawal whose token transfer has been scheduled but whose callback has
@@ -78,6 +88,47 @@ pub struct Totals {
     /// Sum of pending withdrawal amounts (already debited from `available`).
     pub pending_withdrawals: u128,
     pub registered_accounts: u64,
+    /// Sum of accounts' `reserved_collateral` (Buy offers).
+    pub reserved_collateral: u128,
+    /// Sum of accounts' reserved YES / NO shares (Sell offers). These are part
+    /// of `outstanding_*`; reserving does not change supply.
+    pub reserved_yes: u128,
+    pub reserved_no: u128,
+    pub open_offers: u64,
+}
+
+#[near(serializers=[borsh, json])]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Outcome {
+    Yes,
+    No,
+}
+
+#[near(serializers=[borsh, json])]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    /// The maker buys shares with reserved collateral.
+    Buy,
+    /// The maker sells reserved shares.
+    Sell,
+}
+
+/// An open, fully funded, fixed-price offer. Removed when filled or cancelled.
+#[near(serializers=[borsh])]
+#[derive(Clone)]
+pub struct Offer {
+    pub id: u64,
+    pub owner: AccountId,
+    pub outcome: Outcome,
+    pub side: Side,
+    /// Collateral base units per 1 whole share (1_000_000 share base units).
+    pub price: u128,
+    /// Original quantity, share base units.
+    pub quantity: u128,
+    pub filled: u128,
+    /// 0 = no expiry (trading cutoff still applies).
+    pub expires_at_ns: u64,
+    pub created_at_ns: u64,
 }
 
 #[near(contract_state)]
@@ -91,4 +142,7 @@ pub struct Contract {
     pub(crate) next_withdrawal_id: u64,
     pub(crate) accounts: LookupMap<AccountId, Account>,
     pub(crate) withdrawals: LookupMap<AccountId, PendingWithdrawal>,
+    /// Open offers by bucket (see `offers::bucket`). Ids are `(seq << 2) | bucket`.
+    pub(crate) offers: [IterableMap<u64, Offer>; 4],
+    pub(crate) next_offer_seq: u64,
 }

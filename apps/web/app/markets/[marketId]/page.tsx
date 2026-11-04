@@ -4,9 +4,10 @@ import { use, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useAdapterData, useApp } from "@/lib/app-context";
-import { dateTime, money, movement, statusLabel, yesPct } from "@/lib/format";
+import { dateTime, money, movement, priceStr, statusLabel, yesPct } from "@/lib/format";
+import { bestPrice } from "@/lib/quote";
 import { useMediaQuery } from "@/lib/hooks";
-import type { Outcome } from "@/lib/types";
+import type { Offer, Outcome, Side } from "@/lib/types";
 import { ActivityList } from "@/components/trading/ActivityList";
 import { ManageShares } from "@/components/trading/ManageShares";
 import { OffersPanel } from "@/components/trading/OffersPanel";
@@ -24,6 +25,8 @@ function Detail({ id }: { id: string }) {
   const desktop = useMediaQuery("(min-width: 1024px)");
   const [sheet, setSheet] = useState(false);
   const [manage, setManage] = useState(false);
+  const [pick, setPick] = useState<{ seq: number; outcome: Outcome; side: Side; offerId: string } | null>(null);
+  const [bookOutcome, setBookOutcome] = useState<Outcome>(initial);
   const market = useAdapterData((a) => a.getMarket(id), [id]);
   const book = useAdapterData((a) => a.getBook(id), [id]);
   const hist = useAdapterData((a) => a.getHistory(id), [id]);
@@ -40,7 +43,15 @@ function Detail({ id }: { id: string }) {
     try { await navigator.clipboard.writeText(window.location.href); showToast("Link copied"); } catch { showToast("Couldn’t copy. Copy the address bar instead."); }
   };
   const tone = m.status === "open" ? "yes" : m.status === "resolved" ? "brand" : "warn";
-  const ticket = <TradeTicket key={initial} m={m} book={book.data ?? []} initialOutcome={initial} />;
+  const onPick = (o: Offer) => {
+    setPick({ seq: (pick?.seq ?? 0) + 1, outcome: o.outcome, side: o.side === "sell" ? "buy" : "sell", offerId: o.id });
+    setBookOutcome(o.outcome);
+    if (!desktop) setSheet(true);
+  };
+  const ticket = <TradeTicket key={`${initial}-${pick?.seq ?? 0}`} m={m} book={book.data ?? []}
+    init={pick ? { outcome: pick.outcome, side: pick.side, offerId: pick.offerId } : { outcome: initial }} />;
+  const yesAsk = bestPrice(book.data ?? [], "YES", "buy");
+  const yesBid = bestPrice(book.data ?? [], "YES", "sell");
   const holds = account?.positions.filter((p) => p.marketId === m.id) ?? [];
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -55,6 +66,7 @@ function Detail({ id }: { id: string }) {
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-mute">
               <Badge tone={tone}>{statusLabel[m.status]}</Badge>
               <span>{m.status === "open" ? "Closes" : "Closed"} {dateTime(m.closesAt)}</span>
+              <span>Volume <b className="text-fg">{money(m.volume, adapter.symbol, 0)}</b></span>
             </div>
           </div>
           <div className="flex shrink-0">
@@ -64,17 +76,22 @@ function Detail({ id }: { id: string }) {
         </header>
 
         <section className="rounded-[14px] border border-line bg-card p-4">
-          <div className="mb-3 flex flex-wrap items-end gap-x-6 gap-y-2">
+          <div className="mb-3 flex flex-wrap items-end gap-x-6 gap-y-3">
             <div>
               <p className="text-xs text-mute">
-                <Tooltip text="Display probability = price of the most recent YES trade (NO trades are shown as the YES-equivalent). It is not an executable price; see Offers for what you can actually buy or sell.">Chance of YES ⓘ</Tooltip>
+                <Tooltip text="Headline probability = price of the most recent YES trade (a NO trade is shown as its YES-equivalent). It is a display value, not an executable price and not what the ticket uses.">Chance of YES ⓘ</Tooltip>
               </p>
               <p className="text-3xl font-semibold text-yes">{pct == null ? "—" : `${pct}%`}</p>
             </div>
             {mv ? <p className={`pb-1 text-sm font-medium ${mv.delta >= 0 ? "text-yes" : "text-no"}`}>{mv.label}</p> : <p className="pb-1 text-sm text-mute">{pct == null ? "No trades yet" : "Price movement unavailable"}</p>}
-            <div className="ml-auto text-right"><p className="text-xs text-mute">Volume</p><p className="font-semibold">{money(m.volume, adapter.symbol, 0)}</p></div>
+            <dl className="ml-auto grid grid-cols-3 gap-x-5 text-right text-xs">
+              <div><dt className="text-mute">Last YES trade</dt><dd className="text-sm font-semibold">{priceStr(m.lastYes)}</dd></div>
+              <div><dt className="text-mute">Best YES ask</dt><dd className="text-sm font-semibold text-no">{priceStr(yesAsk)}</dd></div>
+              <div><dt className="text-mute">Best YES bid</dt><dd className="text-sm font-semibold text-yes">{priceStr(yesBid)}</dd></div>
+            </dl>
           </div>
-          <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} demo={adapter.id === "demo"} height={desktop ? 280 : 220} />
+          <p className="mb-1 text-xs text-mute">Implied probability of YES, % (last-trade based). {adapter.id === "demo" ? "Demo data: simulated history." : "Live history needs a price indexer, which doesn’t exist yet."}</p>
+          <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} demo={adapter.id === "demo"} height={desktop ? 300 : 220} />
         </section>
 
         {holds.length > 0 && (
@@ -84,9 +101,10 @@ function Detail({ id }: { id: string }) {
           </div>
         )}
 
-        <OffersPanel book={book.data} account={account?.accountId ?? null} loading={book.loading} />
-        <ActivityList items={act.data} loading={act.loading} />
+        <OffersPanel book={book.data} market={m} account={account?.accountId ?? null} loading={book.loading} tradable={m.status === "open"}
+          onPick={onPick} selectedId={pick?.offerId ?? null} outcome={bookOutcome} setOutcome={setBookOutcome} />
         <ResolutionRules m={m} />
+        <ActivityList items={act.data} loading={act.loading} />
         <Btn variant="outline" onClick={() => setManage(true)} className="w-full sm:w-auto">Manage shares</Btn>
       </div>
 

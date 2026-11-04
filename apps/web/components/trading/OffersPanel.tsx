@@ -1,32 +1,56 @@
 "use client";
 import { useState } from "react";
-import { formatUnits } from "@/lib/amounts";
+import { formatUnits, mulPrice } from "@/lib/amounts";
 import { priceStr } from "@/lib/format";
-import type { Offer, Outcome } from "@/lib/types";
-import { EmptyState } from "../ui/bits";
+import type { Market, Offer, Outcome } from "@/lib/types";
+import { EmptyState, Tooltip } from "../ui/bits";
 
-export function OffersPanel({ book, account, loading }: { book: Offer[] | null; account: string | null; loading?: boolean }) {
-  const [outcome, setOutcome] = useState<Outcome>("YES");
-  const sel = (book ?? []).filter((o) => o.outcome === outcome);
-  const bids = sel.filter((o) => o.side === "buy").sort((a, b) => Number(b.price - a.price));
-  const asks = sel.filter((o) => o.side === "sell").sort((a, b) => Number(a.price - b.price));
-  const col = (title: string, rows: Offer[], tone: string) => (
-    <div className="min-w-0">
-      <div className="grid grid-cols-[1fr_1fr_auto] gap-2 border-b border-line px-1 pb-1.5 text-xs text-mute"><span>{title}</span><span className="text-right">Price</span><span className="w-16 text-right">Shares</span></div>
-      {rows.length === 0 && <p className="px-1 py-4 text-sm text-mute">No {title.toLowerCase()}</p>}
-      {rows.slice(0, 8).map((o, i) => (
-        <div key={o.id} className={`grid grid-cols-[1fr_1fr_auto] gap-2 rounded px-1 py-1 text-sm ${i === 0 ? "bg-elev/60" : ""}`}>
-          <span className="truncate text-xs text-mute">{o.owner === account ? "Your offer" : o.owner}</span>
-          <span className={`text-right font-medium ${tone}`}>{priceStr(o.price)}</span>
-          <span className="w-16 text-right">{formatUnits(o.qty, 0, 2)}</span>
-        </div>
-      ))}
-    </div>
-  );
+const SHOW = 7;
+
+interface Row { o: Offer; cumQty: bigint; cumCost: bigint }
+
+/** Cumulative from the best quote outward; each side is computed on its own. */
+function build(offers: Offer[], bestFirst: boolean): Row[] {
+  const sorted = [...offers].sort((a, b) => (bestFirst ? Number(a.price - b.price) : Number(b.price - a.price)));
+  let q = 0n, c = 0n;
+  return sorted.map((o) => { q += o.qty; c += mulPrice(o.price, o.qty); return { o, cumQty: q, cumCost: c }; });
+}
+
+export function OffersPanel({ book, market, account, loading, onPick, selectedId, outcome, setOutcome, tradable }: {
+  book: Offer[] | null; market: Market; account: string | null; loading?: boolean; tradable: boolean;
+  onPick: (o: Offer) => void; selectedId: string | null; outcome: Outcome; setOutcome: (o: Outcome) => void;
+}) {
+  const [all, setAll] = useState(false);
+  const sel = (book ?? []).filter((o) => o.outcome === outcome && o.fillable !== false);
+  const asks = build(sel.filter((o) => o.side === "sell"), true); // best (lowest) first
+  const bids = build(sel.filter((o) => o.side === "buy"), false); // best (highest) first
+  const askShown = (all ? asks : asks.slice(0, SHOW)).reverse(); // best ask nearest the separator (bottom of red block)
+  const bidShown = all ? bids : bids.slice(0, SHOW);
+  const maxQ = [asks, bids].map((r) => (r.length ? r[Math.min(r.length, all ? r.length : SHOW) - 1].cumQty : 0n)).reduce((a, b) => (a > b ? a : b), 1n);
+  const spread = asks[0] && bids[0] ? asks[0].o.price - bids[0].o.price : null;
+
+  const row = (r: Row, tone: "ask" | "bid") => {
+    const own = r.o.owner === account;
+    const sel = r.o.id === selectedId;
+    const w = Number((r.cumQty * 100n) / maxQ);
+    const disabled = own || !tradable;
+    return (
+      <button key={r.o.id} type="button" disabled={disabled} onClick={() => onPick(r.o)} data-offer-id={r.o.id} data-own={own || undefined}
+        title={own ? `Your offer #${r.o.id}: cancel it from your portfolio` : `Offer #${r.o.id} by ${r.o.owner}`}
+        aria-label={`${tone === "ask" ? "Buy" : "Sell"} ${outcome} offer at ${priceStr(r.o.price)}, ${formatUnits(r.o.qty, 0, 4)} shares${own ? ", your offer" : ""}`}
+        className={`relative grid w-full grid-cols-3 gap-2 overflow-hidden px-2 py-1.5 text-left text-[13px] ${disabled ? "cursor-not-allowed" : "hover:bg-elev"} ${sel ? "ring-1 ring-inset ring-brand" : ""} ${own ? "outline outline-1 -outline-offset-1 outline-brand/50" : ""}`}>
+        <span aria-hidden className={`absolute inset-y-0 right-0 ${tone === "ask" ? "bg-no/10" : "bg-yes/10"}`} style={{ width: `${w}%` }} />
+        <span className={`relative font-semibold ${tone === "ask" ? "text-no" : "text-yes"}`}>{priceStr(r.o.price)}{own && <span className="ml-1.5 rounded bg-brand/25 px-1 text-[10px] font-semibold text-[#c5ccff]">YOU</span>}</span>
+        <span className="relative text-right">{formatUnits(r.o.qty, 0, 4)}</span>
+        <span className="relative text-right text-mute">{formatUnits(r.cumCost, 2, 2)}</span>
+      </button>
+    );
+  };
+
   return (
-    <section aria-label="Offers" className="rounded-[14px] border border-line bg-card p-4">
+    <section aria-label="Order book" className="rounded-[14px] border border-line bg-card p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Offers</h2>
+        <h2 className="text-lg font-semibold">Order book</h2>
         <div role="tablist" aria-label="Order book outcome" className="flex rounded-lg bg-elev p-0.5">
           {(["YES", "NO"] as const).map((o) => (
             <button key={o} role="tab" aria-selected={outcome === o} onClick={() => setOutcome(o)}
@@ -34,12 +58,30 @@ export function OffersPanel({ book, account, loading }: { book: Offer[] | null; 
           ))}
         </div>
       </div>
-      {loading ? <div className="skeleton h-32" /> : sel.length === 0 ? (
-        <EmptyState title="No offers yet" body="Nobody is offering this outcome. You can place a limit offer to start the book." />
+      {loading ? <div className="skeleton h-48" /> : sel.length === 0 ? (
+        <EmptyState title={`No ${outcome} offers`} body={tradable ? "Nobody is offering this outcome right now. Place a limit offer to start its book." : "Trading is closed for this market."} />
       ) : (
-        <div className="grid gap-5 sm:grid-cols-2">{col("Bids (buy)", bids, "text-yes")}{col("Asks (sell)", asks, "text-no")}</div>
+        <div>
+          <div className="grid grid-cols-3 gap-2 border-b border-line px-2 pb-1.5 text-xs text-mute">
+            <span>Price ({outcome})</span><span className="text-right">Shares</span>
+            <span className="text-right"><Tooltip text="Total = cumulative collateral from the best price outward, for this side only. Asks and bids are calculated independently.">Total ⓘ</Tooltip></span>
+          </div>
+          <div aria-label={`${outcome} sell offers (asks)`}>
+            {askShown.length ? askShown.map((r) => row(r, "ask")) : <p className="px-2 py-3 text-sm text-mute">No sell offers</p>}
+          </div>
+          <div className="my-1 flex items-center justify-between border-y border-line bg-elev/50 px-2 py-1.5 text-xs text-mute">
+            <span>Spread <b className="text-fg">{spread == null ? "—" : priceStr(spread)}</b></span>
+            <span>Last YES trade <b className="text-fg">{priceStr(market.lastYes)}</b></span>
+          </div>
+          <div aria-label={`${outcome} buy offers (bids)`}>
+            {bidShown.length ? bidShown.map((r) => row(r, "bid")) : <p className="px-2 py-3 text-sm text-mute">No buy offers</p>}
+          </div>
+          {(asks.length > SHOW || bids.length > SHOW) && (
+            <button onClick={() => setAll(!all)} className="mt-2 text-xs font-semibold text-brand hover:underline">{all ? "Show fewer offers" : `Show all ${asks.length + bids.length} offers`}</button>
+          )}
+        </div>
       )}
-      <p className="mt-3 text-xs text-mute">YES and NO have separate books. A NO price is never calculated from a YES price.</p>
+      <p className="mt-3 text-xs text-mute">Each row is one real offer. Click one to fill it from the trade ticket; you still choose the quantity. YES and NO have separate books.</p>
     </section>
   );
 }

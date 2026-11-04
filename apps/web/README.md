@@ -28,19 +28,20 @@ Live testnet mode is optional: copy `.env.example` to `.env.local` and fill `NEX
 
 ## Demo vs live
 
-| Feature | Demo adapter | NEAR adapter (Milestone 1 contract) |
+| Feature | Demo adapter | NEAR adapter (contract schema v3) |
 | - | - | - |
-| Markets list, categories, search, filters, sort, bookmarks | sample data | one real market from `get_market` (no price, no history) |
-| Prices, order book, history, activity | simulated | **not available** (no price source on-chain) |
-| Buy/sell, take/limit offers, cancel | simulated, balances stay consistent | disabled with an explanation |
-| Deposit / withdraw | simulated | `ft_transfer_call` / `withdraw`, all receipts checked |
-| Create / combine YES+NO (split/merge) | simulated | `split_position` / `merge_positions` |
-| Register | n/a | `storage_deposit` on the market |
-| Resolution / redeem | simulated | **not available** |
+| Markets, categories, search, filters, sort, bookmarks | sample data | the one real market from `get_market` (status, resolver, resolution) |
+| Order book | simulated, per-offer ids | **live**: `list_offers` for both outcomes/sides, read at one pinned final block |
+| Take (partial) / limit offers / cancel | simulated, balances stay consistent | **live**: `fill_offer`, `create_offer`, `cancel_offer` (not exercised against a deployment) |
+| Deposit / withdraw / split / merge / register | simulated | **live** (`ft_transfer_call`, `withdraw`, `split_position`, `merge_positions`, `storage_deposit`) |
+| Redeem | simulated | **live**: `get_redemption_preview` then `redeem` (credits internal collateral; withdraw afterwards) |
+| Resolve market | n/a | not in the UI (resolver-only; not a participant action) |
+| Prices, headline probability, chart history, activity | simulated | **unavailable**: no price/trade source or indexer exists |
+| Wrong-network detection | n/a | heuristic only (`.near` account while configured for testnet) |
 
-## Contract integration requirements (not implemented by the contract yet)
-
-Offers (create/take/cancel, partial fills), a price/trade source or indexer for history and activity, resolution + redemption views, token-contract registration (`storage_deposit` on the token), and an event indexer for account activity. The contract was not modified.
+Trading rules enforced in the UI (and by the contract): 0.01 price tick (0.01 to 0.99), 100-base-unit lot (0.0001 share),
+0.01-share minimum for limit offers, at most 10 open offers, no self-fills, cancellation always allowed. A missing offer
+means "no active offer record" (filled, cancelled or released), not a specific outcome.
 
 ## Not verified
 

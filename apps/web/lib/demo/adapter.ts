@@ -1,8 +1,8 @@
 import { mulPrice } from "../amounts";
-import { bestPrice, quoteTake } from "../quote";
+import { MAX_OPEN_OFFERS, MAX_PRICE, MIN_ORDER_QUANTITY, MIN_PRICE, PRICE_TICK, QUANTITY_LOT } from "../trading";
 import type {
-  AccountState, ActivityItem, Capabilities, DataAdapter, HistoryPoint, Market, Offer, OpenOffer, Position,
-  TradeRequest, TxReporter,
+  AccountState, ActivityItem, Capabilities, CreateOfferRequest, DataAdapter, HistoryPoint, Market, Offer, OpenOffer, Position,
+  TxReporter,
 } from "../types";
 import {
   DEMO_ACCOUNT, DEMO_INITIAL, DEMO_NOW, demoActivity, demoHistory, demoInitialOffers, demoInitialPositions, demoMarkets, demoOffers,
@@ -57,6 +57,8 @@ export class DemoAdapter implements DataAdapter {
   capabilities = DEMO_CAPABILITIES;
   private s = load() ?? initial();
   private subs = new Set<() => void>();
+  /** Demo-only switch: the next transaction is rejected as if the user declined the wallet prompt. */
+  rejectNext = false;
 
   subscribe(cb: () => void) { this.subs.add(cb); return () => { this.subs.delete(cb); }; }
   private emit() {
@@ -64,6 +66,7 @@ export class DemoAdapter implements DataAdapter {
     try { localStorage.setItem(KEY, enc(this.s)); } catch { /* storage unavailable: state stays in memory */ }
     this.subs.forEach((f) => f());
   }
+  setRejectNext(v: boolean) { this.rejectNext = v; this.emit(); }
   reset() {
     this.s = initial();
     try { localStorage.removeItem(KEY); } catch { /* ignore */ }
@@ -82,14 +85,30 @@ export class DemoAdapter implements DataAdapter {
   }
   private pos(marketId: string, outcome: "YES" | "NO") {
     let p = this.s.positions.find((x) => x.marketId === marketId && x.outcome === outcome);
-    if (!p) { p = { marketId, outcome, qty: 0n, avgPrice: null }; this.s.positions.push(p); }
+    if (!p) { p = { marketId, outcome, qty: 0n, avgPrice: null, reserved: 0n }; this.s.positions.push(p); }
     return p;
+  }
+  private withReserved(): Position[] {
+    const out = this.s.positions.map((p) => ({ ...p }));
+    for (const o of this.s.mine) {
+      if (o.side !== "sell") continue;
+      let p = out.find((x) => x.marketId === o.marketId && x.outcome === o.outcome);
+      if (!p) { p = { marketId: o.marketId, outcome: o.outcome, qty: 0n, avgPrice: null, reserved: 0n }; out.push(p); }
+      p.reserved += o.qty;
+    }
+    return out;
   }
   private prune() { this.s.positions = this.s.positions.filter((p) => p.qty > 0n); }
 
   private async run(r: TxReporter, work: () => void, label: string) {
     r({ phase: "awaiting-wallet", message: "Demo: simulating wallet approval…" });
     await sleep(250);
+    if (this.rejectNext) {
+      this.rejectNext = false;
+      const msg = "Transaction rejected in the wallet. Nothing was changed.";
+      r({ phase: "failed", message: msg });
+      throw new Error(msg);
+    }
     r({ phase: "submitted", message: "Demo: transaction submitted.", hash: `demo-${this.s.seq.toString(16).padStart(6, "0")}` });
     await sleep(250);
     r({ phase: "confirming", message: "Demo: waiting for confirmation…" });
@@ -116,8 +135,8 @@ export class DemoAdapter implements DataAdapter {
     if (accountId !== DEMO_ACCOUNT) return null;
     const committed = this.s.mine.filter((o) => o.side === "buy").reduce((a, o) => a + mulPrice(o.price, o.qty), 0n);
     return {
-      accountId, isDemo: true, walletBalance: this.s.wallet, available: this.s.available, committed,
-      pendingWithdrawal: this.s.pending, positions: clone(this.s.positions), offers: clone(this.s.mine), activity: [...this.s.log],
+      accountId, isDemo: true, walletBalance: this.s.wallet, available: this.s.available, committed, maxOpenOffers: MAX_OPEN_OFFERS,
+      pendingWithdrawal: this.s.pending, positions: this.withReserved(), offers: clone(this.s.mine), activity: [...this.s.log],
     };
   }
 
@@ -160,56 +179,54 @@ export class DemoAdapter implements DataAdapter {
     }, "Demo YES + NO shares combined");
   }
 
-  async trade(req: TradeRequest, r: TxReporter) {
-    const { marketId, outcome, side, mode, qty } = req;
-    const label = mode === "take" ? (side === "buy" ? "Demo trade completed" : "Demo sale completed") : "Demo limit offer placed";
+  fillOffer(offerId: string, qty: bigint, r: TxReporter) {
+    return this.run(r, () => {
+      const o = this.s.book.find((x) => x.id === offerId);
+      if (!o) throw new Error("Offer no longer available");
+      const m = this.market(o.marketId);
+      if (m.status !== "open") throw new Error("Market closed");
+      if (qty <= 0n || qty % QUANTITY_LOT !== 0n) throw new Error("Quantity must be a positive multiple of the lot");
+      if (qty > o.qty) throw new Error("Offer no longer has that many shares available");
+      const cost = mulPrice(o.price, qty);
+      const p = this.pos(o.marketId, o.outcome);
+      if (o.side === "sell") {
+        if (cost > this.s.available) throw new Error("Insufficient balance");
+        const prior = (p.avgPrice ?? o.price) * p.qty;
+        p.avgPrice = (prior + cost * 1_000_000n) / (p.qty + qty);
+        p.qty += qty; this.s.available -= cost;
+      } else {
+        if (p.qty < qty) throw new Error("Insufficient shares");
+        p.qty -= qty; this.s.available += cost; this.prune();
+      }
+      o.qty -= qty;
+      this.s.book = this.s.book.filter((x) => x.qty > 0n);
+      m.prevYes = m.prevYes ?? m.lastYes;
+      m.lastYes = o.outcome === "YES" ? o.price : 1_000_000n - o.price; // display convention: last trade as YES-equivalent
+      m.volume += cost; m.hasHistory = true;
+      this.note(`${o.side === "sell" ? "Bought" : "Sold"} ${Number(qty) / 1e6} ${o.outcome} at ${Number(o.price) / 1e6} (demo)`, o.marketId);
+    }, "Demo trade completed");
+  }
+
+  createOffer(req: CreateOfferRequest, r: TxReporter) {
+    const { marketId, outcome, side, qty, price } = req;
     return this.run(r, () => {
       const m = this.market(marketId);
       if (m.status !== "open") throw new Error("Market closed");
-      if (qty <= 0n) throw new Error("Enter an amount");
-      if (mode === "take") {
-        const q = quoteTake(this.s.book.filter((o) => o.marketId === marketId), outcome, side, qty, DEMO_ACCOUNT);
-        if (q.filled === 0n) throw new Error("No available offers");
-        if (q.unfilled > 0n) throw new Error("Not enough shares are offered at current prices");
-        if (side === "buy") {
-          if (q.total > this.s.available) throw new Error("Insufficient balance");
-          const p = this.pos(marketId, outcome);
-          const prior = (p.avgPrice ?? q.avgPrice!) * p.qty;
-          p.avgPrice = (prior + q.total * 1_000_000n) / (p.qty + qty) ;
-          p.qty += qty; this.s.available -= q.total;
-        } else {
-          const p = this.pos(marketId, outcome);
-          if (p.qty < qty) throw new Error("Insufficient shares");
-          p.qty -= qty; this.s.available += q.total; this.prune();
-        }
-        for (const f of q.fills) {
-          const o = this.s.book.find((x) => x.id === f.offerId)!;
-          o.qty -= f.qty;
-        }
-        this.s.book = this.s.book.filter((o) => o.qty > 0n);
-        const last = q.fills[q.fills.length - 1].price;
-        m.prevYes = m.prevYes ?? m.lastYes;
-        m.lastYes = outcome === "YES" ? last : 1_000_000n - last; // display convention: last trade, expressed as YES-equivalent
-        m.volume += q.total; m.hasHistory = true;
-        this.note(`${side === "buy" ? "Bought" : "Sold"} ${qty / 1_000_000n} ${outcome} (demo)`, marketId);
+      if (price < MIN_PRICE || price > MAX_PRICE || price % PRICE_TICK !== 0n) throw new Error("Invalid price: use a 0.01 step between 0.01 and 0.99");
+      if (qty < MIN_ORDER_QUANTITY || qty % QUANTITY_LOT !== 0n) throw new Error("Invalid quantity");
+      if (this.s.mine.length >= MAX_OPEN_OFFERS) throw new Error("Too many open offers (maximum 10)");
+      if (side === "buy") {
+        const cost = mulPrice(price, qty);
+        if (cost > this.s.available) throw new Error("Insufficient balance");
+        this.s.available -= cost;
       } else {
-        const price = req.price;
-        if (price == null || price <= 0n || price >= 1_000_000n) throw new Error("Price must be between 0 and 1");
-        const edge = bestPrice(this.s.book.filter((o) => o.marketId === marketId), outcome, side, DEMO_ACCOUNT);
-        if (edge != null && (side === "buy" ? price >= edge : price <= edge)) throw new Error("This price would match an existing offer; use Take an offer instead");
-        if (side === "buy") {
-          const cost = mulPrice(price, qty);
-          if (cost > this.s.available) throw new Error("Insufficient balance");
-          this.s.available -= cost;
-        } else {
-          const p = this.pos(marketId, outcome);
-          if (p.qty < qty) throw new Error("Insufficient shares");
-          p.qty -= qty; this.prune();
-        }
-        this.s.mine.push({ id: `mine-${this.s.seq++}`, marketId, outcome, side, price, qty, owner: DEMO_ACCOUNT, createdAt: DEMO_NOW + this.s.seq * 60_000, status: "open" });
-        this.note(`Placed limit ${side} ${qty / 1_000_000n} ${outcome} (demo)`, marketId, "offer");
+        const p = this.pos(marketId, outcome);
+        if (p.qty < qty) throw new Error("Insufficient shares");
+        p.qty -= qty; this.prune();
       }
-    }, label);
+      this.s.mine.push({ id: `mine-${this.s.seq++}`, marketId, outcome, side, price, qty, owner: DEMO_ACCOUNT, createdAt: DEMO_NOW + this.s.seq * 60_000, status: "open" });
+      this.note(`Placed limit ${side} ${Number(qty) / 1e6} ${outcome} at ${Number(price) / 1e6} (demo)`, marketId, "offer");
+    }, "Demo limit offer placed");
   }
 
   cancelOffer(offerId: string, r: TxReporter) {

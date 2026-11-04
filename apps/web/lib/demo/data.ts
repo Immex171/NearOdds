@@ -133,10 +133,10 @@ export function demoActivity(m: Market): ActivityItem[] {
 
 export function demoInitialPositions(): Position[] {
   return [
-    { marketId: "near-10-dec", outcome: "YES", qty: tok(40), avgPrice: c(36) },
-    { marketId: "fed-dec-cut", outcome: "NO", qty: tok(60), avgPrice: c(33) },
-    { marketId: "world-cup-brazil", outcome: "YES", qty: tok(25), avgPrice: c(18) },
-    { marketId: "gpt-6", outcome: "YES", qty: tok(30), avgPrice: null },
+    { marketId: "near-10-dec", outcome: "YES", qty: tok(40), avgPrice: c(36), reserved: 0n },
+    { marketId: "fed-dec-cut", outcome: "NO", qty: tok(60), avgPrice: c(33), reserved: 0n },
+    { marketId: "world-cup-brazil", outcome: "YES", qty: tok(25), avgPrice: c(18), reserved: 0n },
+    { marketId: "gpt-6", outcome: "YES", qty: tok(30), avgPrice: null, reserved: 0n },
   ];
 }
 

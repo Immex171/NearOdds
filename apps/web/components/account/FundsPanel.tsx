@@ -4,7 +4,7 @@ import { formatUnits, tryParseUnits } from "@/lib/amounts";
 import { useApp } from "@/lib/app-context";
 import { config } from "@/lib/config";
 import { useTx } from "@/lib/hooks";
-import { money } from "@/lib/format";
+import { money, nearStr } from "@/lib/format";
 import { Btn } from "../ui/bits";
 import { TransactionStatus } from "./TransactionStatus";
 
@@ -64,6 +64,11 @@ export function FundsPanel() {
           ["Committed to offers", account.committed, "Locked by your resting buy offers"], ["Pending withdrawals", account.pendingWithdrawal, "On the way to your wallet"]] as const).map(([k, v, n]) => (
           <div key={k} className="rounded-[14px] border border-line bg-card p-3.5"><p className="text-xs text-mute">{k}</p><p className="mt-1 text-lg font-semibold">{money(v, sym)}</p><p className="mt-0.5 text-xs text-mute">{n}</p></div>
         ))}
+      </div>
+      <div className="rounded-[14px] border border-line bg-card p-3.5 text-sm" aria-label="Native NEAR registration">
+        <p className="text-xs text-mute">Native NEAR registration (separate from trading collateral)</p>
+        <p className="mt-1 font-semibold">{demo ? "Not needed in demo mode" : account.storageCostYocto != null ? `${nearStr(account.storageCostYocto)} one-time storage deposit` : "—"}</p>
+        <p className="mt-0.5 text-xs text-mute">{demo ? "On testnet you pay this in NEAR, not in tNOC, to register with the market." : account.registered ? "You are registered with the market." : "Not registered yet. This NEAR pays for your account’s storage, including up to 10 open offers; it is not collateral and can’t be traded."}</p>
       </div>
       {!demo && account.registered === false && (
         <div className="rounded-[14px] border border-brand/40 bg-brand/10 p-4">

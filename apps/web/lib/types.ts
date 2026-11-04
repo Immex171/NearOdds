@@ -46,6 +46,8 @@ export interface Offer {
   qty: bigint;
   owner: string;
   createdAt: number;
+  /** Absent/true = fillable now; false = expired or trading closed (still cancellable). */
+  fillable?: boolean;
 }
 
 export interface OpenOffer extends Offer {
@@ -67,6 +69,8 @@ export interface Position {
   qty: bigint;
   /** Average entry price in base units, if known. */
   avgPrice: bigint | null;
+  /** Shares locked behind the account's open sell offers (not included in `qty`). */
+  reserved: bigint;
 }
 
 export interface AccountState {
@@ -81,6 +85,9 @@ export interface AccountState {
   activity: ActivityItem[];
   /** live only */
   registered?: boolean;
+  /** Native NEAR (yoctoNEAR) needed to register with the market. Never collateral. */
+  storageCostYocto?: bigint;
+  maxOpenOffers: number;
   withdrawalStatus?: "Pending" | "Completed" | "FailedRestored" | null;
 }
 
@@ -100,14 +107,14 @@ export type TxPhase = "idle" | "review" | "awaiting-wallet" | "submitted" | "con
 export interface TxState { phase: TxPhase; message?: string; hash?: string }
 export type TxReporter = (s: TxState) => void;
 
-export interface TradeRequest {
+export interface CreateOfferRequest {
   marketId: string;
   outcome: Outcome;
   side: Side;
-  mode: "take" | "limit";
+  /** Collateral base units per whole share (multiple of the price tick). */
+  price: bigint;
+  /** Share base units (multiple of the lot). */
   qty: bigint;
-  /** limit only */
-  price?: bigint;
 }
 
 export interface Fill { offerId: string; price: bigint; qty: bigint }
@@ -136,7 +143,10 @@ export interface DataAdapter {
   withdraw(amount: bigint, r: TxReporter): Promise<void>;
   split(marketId: string, amount: bigint, r: TxReporter): Promise<void>;
   merge(marketId: string, amount: bigint, r: TxReporter): Promise<void>;
-  trade(req: TradeRequest, r: TxReporter): Promise<void>;
+  /** Rests a fully funded offer (contract `create_offer`). */
+  createOffer(req: CreateOfferRequest, r: TxReporter): Promise<void>;
+  /** Takes `qty` (partial allowed) from one specific offer (contract `fill_offer`). */
+  fillOffer(offerId: string, qty: bigint, r: TxReporter): Promise<void>;
   cancelOffer(offerId: string, r: TxReporter): Promise<void>;
   redeem(marketId: string, r: TxReporter): Promise<void>;
   reset?(): void;

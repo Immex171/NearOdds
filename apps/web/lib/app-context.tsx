@@ -2,7 +2,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { liveConfigured } from "./config";
+import { config, liveConfigured } from "./config";
 import { DEMO_ACCOUNT, DEMO_NOW } from "./demo/data";
 import { DemoAdapter } from "./demo/adapter";
 import { NearAdapter } from "./near/adapter";
@@ -31,6 +31,10 @@ interface Ctx {
   disconnect: () => Promise<void>;
   resetDemo: () => void;
   liveConfigured: boolean;
+  /** Heuristic: a mainnet-style (.near) account while the app is configured for testnet. */
+  wrongNetwork: boolean;
+  rejectNext: boolean;
+  setRejectNext: (v: boolean) => void;
   toast: string | null; showToast: (s: string) => void;
 }
 
@@ -58,6 +62,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [bookmarks, setBookmarks] = useState<string[]>([]);
   const [connectOpen, setConnectOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [rejectNext, setRejectNext] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [liveNow, setLiveNow] = useState(() => Date.now());
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -129,7 +134,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     resetDemo: () => { demo.reset(); showToast("Demo reset to its initial state"); },
     liveConfigured, toast, showToast,
-  }), [adapter, session, accountId, markets, marketsError, account, accountError, refresh, version, bookmarks, toggleBookmark, connectOpen, helpOpen, toast, showToast, liveNow]);
+    wrongNetwork: session.kind === "wallet" && config.network === "testnet" && session.accountId.endsWith(".near"),
+    rejectNext, setRejectNext: (v: boolean) => { demo.setRejectNext(v); setRejectNext(v); },
+  }), [rejectNext, adapter, session, accountId, markets, marketsError, account, accountError, refresh, version, bookmarks, toggleBookmark, connectOpen, helpOpen, toast, showToast, liveNow]);
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }

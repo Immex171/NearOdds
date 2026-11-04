@@ -44,3 +44,11 @@ export function movement(m: Market): { delta: number; label: string } | null {
 }
 
 export const isTradable = (m: Market) => m.status === "open";
+
+/** yoctoNEAR (24 decimals) -> "0.0409 NEAR". Native NEAR only; never mixed with collateral. */
+export function nearStr(yocto: bigint): string {
+  const E = 10n ** 24n;
+  const whole = yocto / E;
+  const frac = (yocto % E).toString().padStart(24, "0").slice(0, 4).replace(/0+$/, "");
+  return `${whole}${frac ? "." + frac : ""} NEAR`;
+}

@@ -7,7 +7,7 @@ import { Icon } from "../ui/Icon";
 import { Badge, Btn } from "../ui/bits";
 
 export function AccountMenu() {
-  const { session, accountId, disconnect, setConnectOpen, setHelpOpen, resetDemo } = useApp();
+  const { session, accountId, disconnect, setConnectOpen, setHelpOpen, resetDemo, rejectNext, setRejectNext } = useApp();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -48,6 +48,11 @@ export function AccountMenu() {
           {session.kind !== "none" && <Link role="menuitem" className={item} href="/funds" onClick={close}>Funds</Link>}
           <button role="menuitem" className={item} onClick={() => { close(); setHelpOpen(true); }}>How it works</button>
           <button role="menuitem" className={item} onClick={() => { close(); resetDemo(); }}>Reset demo</button>
+          {session.kind === "demo" && (
+            <button role="menuitemcheckbox" aria-checked={rejectNext} className={item} onClick={() => { setRejectNext(!rejectNext); close(); }}>
+              {rejectNext ? "✓ " : ""}Demo: reject next transaction
+            </button>
+          )}
           {session.kind === "none"
             ? <button role="menuitem" className={`${item} font-semibold text-brand`} onClick={() => { close(); setConnectOpen(true); }}>Connect wallet</button>
             : <button role="menuitem" className={`${item} text-no`} onClick={() => { close(); void disconnect(); }}>Disconnect</button>}

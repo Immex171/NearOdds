@@ -1,0 +1,25 @@
+[package]
+name = "nearodds-market"
+description = "NearOdds market contract: collateral, YES/NO complete sets, merge, withdraw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Test-only build: shrinks the withdrawal callback gas so the callback itself
+# fails (out of gas). NEVER deploy this build.
+test-failure-injection = []
+
+[dependencies]
+near-sdk = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
+near-workspaces = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+near-parameters = "=0.38.0"

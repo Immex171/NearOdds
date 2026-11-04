@@ -1,0 +1,17 @@
+[package]
+name = "test-collateral"
+description = "NearOdds TEST-ONLY six-decimal NEP-141 collateral token (fixture)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+near-contract-standards = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }

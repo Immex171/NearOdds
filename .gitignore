@@ -1,0 +1,8 @@
+/target
+node_modules
+.env
+.env.*
+!.env.example
+# machine-specific cargo overrides (e.g. OpenSSL paths when pkg-config is missing)
+/.cargo/
+*.log

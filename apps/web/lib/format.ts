@@ -65,3 +65,9 @@ export function shortTitle(q: string): string {
   t = t.replace(/ (?:close|trade|be) (above|below|at)/i, " $1");
   return t.length > 34 ? `${t.slice(0, 33)}…` : t;
 }
+
+/** Date-like identifier when the question contains one ("December 31, 2026"), else a short title. */
+export function marketLabel(q: string): string {
+  const d = /([A-Z][a-z]+ \d{1,2}, \d{4})/.exec(q);
+  return d ? d[1] : shortTitle(q);
+}

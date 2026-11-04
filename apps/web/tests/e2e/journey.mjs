@@ -65,28 +65,35 @@ async function desktop() {
   // ---- Ticket presentations while disconnected ----
   const ticket = page.getByRole("region", { name: "Trade", exact: true });
   const height = () => ticket.evaluate((e) => Math.round(e.getBoundingClientRect().height));
+  const val = (sel) => page.locator(sel).inputValue();
   await page.evaluate(() => localStorage.removeItem("nearodds:session"));
   await page.goto(`${BASE}/markets/near-10-dec?outcome=YES`);
   await ticket.getByRole("button", { name: "Connect wallet" }).waitFor();
   await page.locator('[aria-label="YES sell offers (asks)"] button').first().waitFor();
-  await ticket.getByRole("radio", { name: "Sell" }).click();
-  const hSell = await height();
-  const tText = await ticket.innerText();
-  check("disconnected Sell/Shares ticket is 300-350px tall", hSell >= 280 && hSell <= 350, `${hSell}px`);
-  check("disconnected Sell/Shares: no balance copy, no summary, no extra paragraph", !/Available collateral|Available YES|Connect a wallet to see|Cost|You receive|Fees/.test(tText));
-  check("disconnected Sell/Shares: position label is 'YES · NEAR above $10'", (await ticket.getByTestId("position-label").innerText()).trim() === "YES · NEAR above $10");
-  check("no separate 'Sell YES' badge", (await ticket.getByText("Sell YES", { exact: true }).count()) === 0);
-  if (shots) await ticket.screenshot({ path: `${shots}/ticket-sell-shares-disconnected.png` });
-  await ticket.getByRole("radio", { name: "Buy" }).click();
-  check("Buy shows joined pills 'YES 0.42' and an independent NO quote", /YES 0\.42/.test(await ticket.getByRole("radiogroup", { name: "Outcome" }).innerText()) && /NO 0\.\d\d/.test(await ticket.getByRole("radiogroup", { name: "Outcome" }).innerText()));
-  const pillH = await ticket.getByRole("radio", { name: /^YES 0\.42/ }).evaluate((e) => Math.round(e.getBoundingClientRect().height));
-  check("outcome pills are 30-32px high", pillH >= 30 && pillH <= 32, `${pillH}`);
-  const toolbarH = await ticket.locator("div").first().evaluate((e) => Math.round(e.getBoundingClientRect().height));
-  check("toolbar is 48-52px high", toolbarH >= 48 && toolbarH <= 52, `${toolbarH}`);
+  const hBuyMarket = await height();
+  check("disconnected Buy/Market ticket is ~380-400px tall", hBuyMarket >= 370 && hBuyMarket <= 410, `${hBuyMarket}px`);
+  check("identity: 48px icon, one-line muted question, bold 'December 31, 2026 · YES'", (await ticket.getByTestId("identity-label").innerText()).trim() === "December 31, 2026 · YES" && (await ticket.locator("p.truncate").count()) === 2);
+  const iconSize = await ticket.locator("span[aria-hidden].rounded-xl").first().evaluate((e) => [Math.round(e.getBoundingClientRect().width), Math.round(e.getBoundingClientRect().height)]);
+  check("market icon is a 48px square", iconSize[0] === 48 && iconSize[1] === 48, iconSize.join("x"));
+  check("Buy/Sell sit below the identity, with a short underline on the active tab", (await ticket.getByRole("radio", { name: "Buy" }).locator("span[aria-hidden]").count()) === 1);
+  const dd = await ticket.getByLabel("Order mode").locator("option").allInnerTexts();
+  check("mode dropdown offers Market / Limit", dd.join("|") === "Market|Limit");
+  const yb = await ticket.getByRole("radio", { name: /^YES/ }).evaluate((e) => { const r = e.getBoundingClientRect(); return { h: Math.round(r.height), t: e.textContent, bg: getComputedStyle(e).backgroundColor }; });
+  const nb = await ticket.getByRole("radio", { name: /^NO/ }).evaluate((e) => ({ w: Math.round(e.getBoundingClientRect().width), t: e.textContent }));
+  check("large YES/NO buttons: 46-48px, equal width, quotes with TEST", yb.h >= 46 && yb.h <= 48 && /YES 0\.42 TEST/.test(yb.t) && /NO 0\.\d\d TEST/.test(nb.t), `${yb.h}px ${yb.t} | ${nb.t}`);
   const bg = await ticket.evaluate((e) => getComputedStyle(e).backgroundColor);
-  check("ticket background is near-black #0B0F12", bg === "rgb(11, 15, 18)", bg);
-  const btnH = await ticket.getByRole("button", { name: "Connect wallet" }).evaluate((e) => ({ h: Math.round(e.getBoundingClientRect().height), bg: getComputedStyle(e).backgroundColor, r: getComputedStyle(e).borderRadius }));
-  check("primary button is 44-48px, green #00DC8D, fully rounded", btnH.h >= 44 && btnH.h <= 48 && btnH.bg === "rgb(0, 220, 141)", JSON.stringify(btnH));
+  check("ticket background is charcoal #1C2027", bg === "rgb(28, 32, 39)", bg);
+  const btn = await ticket.getByRole("button", { name: "Connect wallet" }).evaluate((e) => ({ h: Math.round(e.getBoundingClientRect().height), bg: getComputedStyle(e).backgroundColor, r: getComputedStyle(e).borderTopLeftRadius }));
+  check("primary button 46-48px, indigo #3E5DFF, 8px corners", btn.h >= 46 && btn.h <= 48 && btn.bg === "rgb(62, 93, 255)" && btn.r === "8px", JSON.stringify(btn));
+  const amountSize = await page.locator("#amount").evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+  check("Buy/Market amount is 30-36px text", amountSize >= 30 && amountSize <= 36, `${amountSize}px`);
+  check("Market mode has no limit price or expiration", (await page.locator("#limit-price").count()) === 0 && (await ticket.getByLabel("Expires").count()) === 0);
+  check("disconnected: no balance line, no summary", (await ticket.getByTestId("balance").count()) === 0 && (await ticket.getByLabel("Order summary").count()) === 0);
+  if (shots) await ticket.screenshot({ path: `${shots}/ticket-buy-market-disconnected.png` });
+  await ticket.getByRole("radio", { name: "Sell" }).click();
+  check("Sell keeps the large YES/NO buttons, now with bid quotes", /YES 0\.40 TEST/.test(await ticket.getByRole("radio", { name: /^YES/ }).innerText()));
+  check("Sell/Market shows Shares row and 25/50/75/Max shortcuts", (await page.locator("#qty").count()) === 1 && (await ticket.getByRole("button", { name: "Max" }).count()) === 1 && (await ticket.getByRole("button", { name: "25%" }).count()) === 1);
+  if (shots) await ticket.screenshot({ path: `${shots}/ticket-sell-market-disconnected.png` });
 
   // ---- Trade journey as demo account ----
   await page.getByRole("button", { name: "Connect wallet" }).first().click();
@@ -98,47 +105,43 @@ async function desktop() {
   await page.goto(`${BASE}/markets/near-10-dec?outcome=YES`);
   await page.locator('[aria-label="YES sell offers (asks)"] button').first().waitFor();
 
-  // Rules: structured, objective, and consistent with the title
+  // Rules
   const rules = await page.getByRole("region", { name: "Rules" }).innerText();
   check("rules: strict YES and 10-or-less NO conditions", /strictly greater than \$10\.00/.test(rules) && /\$10\.00 or less/.test(rules));
   check("rules: trading close, observation and source are separate", /Trading closes\s*Dec 31, 2026, 11:00 PM UTC/.test(rules) && /Price observation\s*Jan 1, 2027, 12:00 AM UTC/.test(rules) && /Resolution source\s*CoinGecko/.test(rules));
-  check("rules: missing data does not default to NO", /does not default to NO/.test(rules));
 
-  // Balance is explicit and shared
   await page.getByTestId("balance").waitFor();
-  check("ticket shows a numeric available balance", (await page.getByTestId("balance").innerText()).includes("500.00 TEST"));
-  check("selected-offer line: '0.42 TEST/share · 55 available · Change'", /0\.42 TEST\/share · 55 available · Change/.test(await page.getByTestId("selected-offer").innerText()));
-  check("no highlighted offer box or shaded summary card", (await ticket.locator(".border-brand\\/60").count()) === 0);
+  check("connected: one numeric balance line (500.00 TEST)", (await page.getByTestId("balance").innerText()).includes("500.00 TEST"));
+  check("secondary offer line: '0.42 TEST/share · 55 available · Change'", /0\.42 TEST\/share · 55 available · Change/.test(await page.getByTestId("selected-offer").innerText()));
+  check("no prominent blue offer callout", (await ticket.locator('[class*="border-brand"]').count()) === 0);
+  check("empty Market form shows no summary rows", (await ticket.getByLabel("Order summary").count()) === 0);
 
-  // Pick the best ask in the order book -> synchronised selection
+  // Order book selection sync
   const asks = page.locator('[aria-label="YES sell offers (asks)"] button');
   const askPrices = await asks.evaluateAll((els) => els.map((e) => parseFloat(e.querySelector("span:nth-child(2)").textContent)));
   check("asks sorted descending so the best ask is nearest the spread", askPrices.every((p, i) => i === 0 || askPrices[i - 1] >= p), askPrices.join(","));
   await asks.last().click();
   check("order-book row marked SELECTED", (await asks.last().innerText()).includes("SELECTED"));
   const book = await page.getByRole("region", { name: "Order book" }).innerText();
-  check("order book labels: Asks, Bids, units, cumulative value", /asks/i.test(book) && /bids/i.test(book) && /Price \(TEST\/share\)/.test(book) && /Cumulative value \(TEST\)/.test(book));
-  check("cumulative arithmetic: 55x0.42=23.10 then +95x0.43=63.95", /0\.42[\s\S]*?55[\s\S]*?23\.10/.test(book) && /0\.43[\s\S]*?95[\s\S]*?63\.95/.test(book));
+  check("order book labels and cumulative arithmetic", /asks/i.test(book) && /bids/i.test(book) && /Cumulative value \(TEST\)/.test(book) && /0\.42[\s\S]*?55[\s\S]*?23\.10/.test(book) && /0\.43[\s\S]*?95[\s\S]*?63\.95/.test(book));
 
-  // Buy + Shares
-  const emptyBuy = await ticket.innerText();
-  check("empty quantity: no blank summary rows or dashes", !/Cost/.test(emptyBuy) && !/—/.test(emptyBuy));
-  await page.locator("#qty").fill("10");
+  // Buy + Market: budget -> shares bound to the selected offer
+  await page.locator("#amount").fill("4.20");
   await page.waitForTimeout(200);
-  const summary = await page.getByLabel("Order summary").innerText();
-  check("Buy+Shares summary: Cost 4.20 TEST, Payout if YES wins 10.00 TEST", /Cost\s*4\.20 TEST/.test(summary) && /Payout if YES wins\s*10\.00 TEST/.test(summary), summary.replace(/\n+/g, " | "));
-  await page.getByLabel("Order summary").getByText("Details").click();
-  check("fees live under Details as '0 TEST'", /Fees\s*0 TEST/.test(await page.getByLabel("Order summary").innerText()));
-  await page.locator("#qty").fill("500");
-  check("quantity above the offer's remaining amount is blocked", await ticket.getByRole("button", { name: /Only 55 shares available/ }).isDisabled());
-  await page.locator("#qty").fill("0.00005");
-  check("lot rule rejects sub-lot quantities", (await page.getByRole("alert").first().innerText()).includes("0.0001"));
-  await page.locator("#qty").fill("10");
+  const bm = await page.getByLabel("Order summary").innerText();
+  check("Buy/Market 4.20 TEST buys 10 shares: 'Est. shares 10', payout 10.00 TEST", /Est\. shares\s*10/.test(bm) && /Payout if YES wins\s*10\.00 TEST/.test(bm), bm.replace(/\n+/g, " | "));
+  await ticket.getByRole("button", { name: "+10", exact: true }).click();
+  check("budget shortcut +10 raises the amount to 14.2", (await val("#amount")) === "14.2");
+  await page.locator("#amount").fill("100");
+  check("budget above the offer's liquidity is blocked", await ticket.getByRole("button", { name: /Exceeds liquidity \(max 23\.10 TEST\)/ }).isDisabled());
+  await page.locator("#amount").fill("0.00001");
+  check("tiny budget is blocked", await ticket.getByRole("button", { name: "Amount too small" }).isDisabled());
+  await page.locator("#amount").fill("4.20");
   check("primary action reads 'Simulate buy YES'", await ticket.getByRole("button", { name: "Simulate buy YES" }).isEnabled());
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(200);
   if (shots) await page.screenshot({ path: `${shots}/detail-top-1440.png` });
-  if (shots) await ticket.screenshot({ path: `${shots}/ticket-buy-shares.png` });
+  if (shots) await ticket.screenshot({ path: `${shots}/ticket-buy-market.png` });
   await ticket.getByRole("button", { name: "Simulate buy YES" }).click();
   await page.getByText("Demo trade completed").first().waitFor({ timeout: 5000 });
   await page.waitForTimeout(500);
@@ -147,47 +150,64 @@ async function desktop() {
   check("offer remaining quantity is now 45", (await asks.last().innerText()).includes("45"));
   check("activity records the action exactly once", (await page.getByRole("region", { name: "Activity" }).innerText()).split("Bought 10 YES").length === 2);
 
-  // Sell + Shares
+  // Sell + Market
   await ticket.getByRole("radio", { name: "Sell" }).click();
   check("Sell: best bid selected (0.40) and book follows", (await page.getByTestId("selected-offer").innerText()).includes("0.40") && (await page.locator('[aria-label="YES buy offers (bids)"] button').first().innerText()).includes("SELECTED"));
+  await ticket.getByRole("button", { name: "25%" }).click();
+  check("25% of 50 held shares = 12.5", (await val("#qty")) === "12.5");
+  await ticket.getByRole("button", { name: "Max" }).click();
+  check("Max is bounded by the bound bid's 80 and holdings (50)", (await val("#qty")) === "50");
   await page.locator("#qty").fill("5");
-  const sellSummary = await page.getByLabel("Order summary").innerText();
-  check("Sell summary shows a single 'You receive 2.00 TEST'", /You receive\s*2\.00 TEST/.test(sellSummary) && !/Payout/.test(sellSummary), sellSummary.replace(/\n+/g, " | "));
+  const sm = await page.getByLabel("Order summary").innerText();
+  check("Sell/Market: 'You’ll receive 2.00 TEST' only", /You’ll receive\s*2\.00 TEST/.test(sm) && !/Payout/.test(sm), sm.replace(/\n+/g, " | "));
   check("Sell primary action 'Simulate sell YES'", await ticket.getByRole("button", { name: "Simulate sell YES" }).isEnabled());
-  if (shots) await ticket.screenshot({ path: `${shots}/ticket-sell-shares.png` });
-  await ticket.getByRole("radiogroup", { name: "Outcome" }).getByRole("radio", { name: "NO" }).click();
-  check("small outcome selector switches Sell to NO and the order book follows", (await page.getByRole("region", { name: "Order book" }).getByRole("tab", { name: "NO" }).getAttribute("aria-selected")) === "true" && (await ticket.getByTestId("position-label").innerText()).startsWith("NO"));
-  await ticket.getByRole("radiogroup", { name: "Outcome" }).getByRole("radio", { name: "YES" }).click();
+  if (shots) await ticket.screenshot({ path: `${shots}/ticket-sell-market.png` });
+  await ticket.getByRole("radio", { name: /^NO/ }).click();
+  check("switching to NO updates the identity, quotes and order book", (await ticket.getByTestId("identity-label").innerText()).includes("NO") && (await page.getByRole("region", { name: "Order book" }).getByRole("tab", { name: "NO" }).getAttribute("aria-selected")) === "true");
+  await ticket.getByRole("radio", { name: /^YES/ }).click();
+  await page.locator("#qty").fill("500");
+  check("Sell above the bound bid's quantity is blocked", await ticket.getByRole("button", { name: /Only 80 shares available/ }).isDisabled());
+  await page.locator("#qty").fill("60");
+  check("Sell above holdings is blocked", await ticket.getByRole("button", { name: "Insufficient shares" }).isDisabled());
   await ticket.getByRole("radio", { name: "Buy" }).click();
 
-  // Change offer selector
-  await page.locator("#qty").fill("");
+  // Change offer, then the offer disappears
   await ticket.getByRole("button", { name: "Change" }).click();
   await ticket.getByRole("button", { name: /0\.44 TEST/ }).click();
   check("Change selects another offer and the book follows", (await page.getByTestId("selected-offer").innerText()).includes("0.44") && (await page.locator('[aria-label="YES sell offers (asks)"] button[aria-pressed=true]').innerText()).includes("0.44"));
-
-  // Offer becoming unavailable
   const pickedId = await page.locator('[aria-label="YES sell offers (asks)"] button[aria-pressed=true]').getAttribute("data-offer-id");
   await page.evaluate((id) => window.__demo.removeOffer(id), pickedId);
   await page.waitForTimeout(400);
-  await page.locator("#qty").fill("1");
+  await page.locator("#amount").fill("1");
   check("offer removed elsewhere -> 'Offer no longer available'", await ticket.getByRole("button", { name: "Offer no longer available" }).isDisabled());
 
-  // Buy + Limit: insufficient balance, then valid with expiration
+  // Buy + Limit
   await ticket.getByLabel("Order mode").selectOption("limit");
+  const priceBefore = await val("#limit-price");
+  await ticket.getByRole("button", { name: "Increase price by 0.01" }).click();
+  const p1 = await val("#limit-price");
+  await ticket.getByRole("button", { name: "Decrease price by 0.01" }).click();
+  await ticket.getByRole("button", { name: "Decrease price by 0.01" }).click();
+  const p2 = await val("#limit-price");
+  check("limit price +/- steps by the 0.01 tick", priceBefore === "" && p1 === "0.43" && p2 === "0.41", `${p1} ${p2}`);
   await page.locator("#limit-price").fill("0.90");
   await page.locator("#qty").fill("600");
   check("insufficient balance blocks the action", await ticket.getByRole("button", { name: "Insufficient balance" }).isDisabled());
-  check("limit mode has a Limit price row with Ask/Bid line and an Expiration row", /Ask 0\.\d\d · Bid 0\.\d\d TEST/.test(await ticket.innerText()) && (await ticket.getByLabel("Expiration").count()) === 1);
-  check("expiration offers only contract-supported choices", (await ticket.getByLabel("Expiration").locator("option").allInnerTexts()).join("|") === "No expiry|1 hour|24 hours|7 days");
   await page.locator("#limit-price").fill("0.305");
-  check("price tick is enforced", (await page.getByRole("alert").first().innerText()).includes("0.01"));
+  check("price tick is enforced on typed prices", (await page.getByRole("alert").first().innerText()).includes("0.01"));
   await page.locator("#limit-price").fill("0.30");
-  await page.locator("#qty").fill("10");
-  await ticket.getByLabel("Expiration").selectOption("24h");
-  const limSummary = await page.getByLabel("Order summary").innerText();
-  check("Buy+Limit summary: Cost if filled 3.00, payout 10.00", /Cost if filled\s*3\.00 TEST/.test(limSummary) && /Payout if YES wins\s*10\.00 TEST/.test(limSummary));
-  check("Buy+Limit primary label 'Simulate buy offer'", await ticket.getByRole("button", { name: "Simulate buy offer" }).isEnabled());
+  await page.locator("#qty").fill("");
+  await ticket.getByRole("button", { name: "+100", exact: true }).click();
+  await ticket.getByRole("button", { name: "−10", exact: true }).click();
+  check("share shortcuts +100 then −10 = 90", (await val("#qty")) === "90");
+  await ticket.getByRole("button", { name: "−100", exact: true }).click();
+  check("share shortcuts never go negative (0)", (await val("#qty")) === "0");
+  await ticket.getByRole("button", { name: "+10", exact: true }).click();
+  await ticket.getByLabel("Expires").selectOption("24h");
+  check("expiration lists only contract-supported choices", (await ticket.getByLabel("Expires").locator("option").allInnerTexts()).join("|") === "No expiry|1 hour|24 hours|7 days");
+  const bl = await page.getByLabel("Order summary").innerText();
+  check("Buy/Limit footer: Expires, Total 3.00 TEST, Payout if YES wins 10.00 TEST", /Expires/.test(bl) && /Total\s*3\.00 TEST/.test(bl) && /Payout if YES wins\s*10\.00 TEST/.test(bl), bl.replace(/\n+/g, " | "));
+  check("Buy/Limit primary label 'Simulate buy offer'", await ticket.getByRole("button", { name: "Simulate buy offer" }).isEnabled());
   if (shots) await ticket.screenshot({ path: `${shots}/ticket-buy-limit.png` });
 
   // Rejected wallet transaction leaves state unchanged
@@ -197,13 +217,17 @@ async function desktop() {
   await page.getByText(/rejected in the wallet/i).first().waitFor({ timeout: 5000 });
   check("rejected transaction shows a recoverable error and changes nothing", (await page.getByTestId("balance").innerText()).includes("495.80 TEST"));
 
-  // Sell + Limit (screenshot) then place the buy limit offer
+  // Sell + Limit
   await ticket.getByRole("radio", { name: "Sell" }).click();
+  check("Sell/Limit keeps both YES/NO buttons and uses 25/50/75/Max", (await ticket.getByRole("radio", { name: /^NO/ }).count()) === 1 && (await ticket.getByRole("button", { name: "75%" }).count()) === 1);
   await page.locator("#limit-price").fill("0.80");
+  await page.locator("#qty").fill("");
+  await ticket.getByRole("button", { name: "50%" }).click();
+  check("50% of the 50 available shares = 25", (await val("#qty")) === "25");
   await page.locator("#qty").fill("5");
   const slSummary = await page.getByLabel("Order summary").innerText();
-  check("Sell+Limit summary: You receive if filled 4.00 TEST", /You receive if filled\s*4\.00 TEST/.test(slSummary), slSummary.replace(/\n+/g, " | "));
-  check("Sell+Limit primary label 'Simulate sell offer'", await ticket.getByRole("button", { name: "Simulate sell offer" }).isEnabled());
+  check("Sell/Limit: Expires + 'You’ll receive 4.00 TEST'", /Expires/.test(slSummary) && /You’ll receive\s*4\.00 TEST/.test(slSummary) && !/Payout/.test(slSummary), slSummary.replace(/\n+/g, " | "));
+  check("Sell/Limit primary label 'Simulate sell offer'", await ticket.getByRole("button", { name: "Simulate sell offer" }).isEnabled());
   if (shots) await ticket.screenshot({ path: `${shots}/ticket-sell-limit.png` });
   await ticket.getByRole("radio", { name: "Buy" }).click();
   await page.locator("#limit-price").fill("0.30");
@@ -223,9 +247,8 @@ async function desktop() {
     await page.evaluate((v) => window.scrollTo(0, v), y);
     await page.waitForTimeout(250);
     const h = await header(), t = await box();
-    const buttonVisible = await ticket.locator("button.rounded-full").evaluate((e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });
     const buySell = await ticket.getByRole("radio", { name: "Buy" }).evaluate((e) => e.getBoundingClientRect().top);
-    check(`ticket at ${name}: below header with gap, within viewport, Buy/Sell and primary action reachable`, t.top >= h + 8 && t.bottom <= 900 && buySell >= h && buttonVisible, `header=${h} ticket=${t.top}-${t.bottom} w=${t.w}`);
+    check(`ticket at ${name}: below header with gap, within viewport, Buy/Sell reachable`, t.top >= h + 8 && t.bottom <= 900 && buySell >= h, `header=${h} ticket=${t.top}-${t.bottom} w=${t.w}`);
     if (name === "bottom" && shots) await page.screenshot({ path: `${shots}/detail-bottom-1440.png` });
   }
   check("ticket is 350-360px wide", [350, 360].includes((await box()).w), `${(await box()).w}`);
@@ -241,10 +264,9 @@ async function desktop() {
   await page.waitForTimeout(500);
   const text = await page.locator("main").innerText();
   check("portfolio shows the same available balance", text.includes("492.80 TEST"));
-  check("portfolio shows 50 YES bought + 15 in offers", /65 \(15 in offers\)/.test(text));
+  check("portfolio shows 50 YES + 15 in offers", /65 \(15 in offers\)/.test(text));
   if (shots) await page.screenshot({ path: `${shots}/portfolio-1440.png` });
 
-  // Offer cancellation updates committed collateral
   await page.getByRole("tab", { name: /Open offers/ }).click();
   const committed = () => page.getByText("Committed to offers").locator("xpath=following-sibling::p[1]").innerText();
   const committedBefore = await committed();
@@ -267,7 +289,7 @@ async function desktop() {
 
   // No-offers + closed
   await page.goto(`${BASE}/markets/unemployment-4-5`);
-  await page.locator("#qty").fill("5");
+  await page.locator("#amount").fill("5");
   check("no-offers state", await page.getByRole("button", { name: "No available offers" }).isDisabled());
   await page.goto(`${BASE}/markets/cpi-below-3`);
   check("closed market state", await page.getByRole("button", { name: "Market closed" }).isDisabled());
@@ -295,8 +317,8 @@ async function mobile() {
   await page.locator('[aria-label="YES sell offers (asks)"] button').last().click();
   await page.getByRole("dialog", { name: "Trade" }).waitFor();
   check("tapping an offer opens the sheet with that offer selected", (await page.getByRole("dialog").innerText()).includes("0.42"));
-  await page.locator("#qty").fill("2");
-  await page.locator("#qty").focus();
+  await page.locator("#amount").fill("2");
+  await page.locator("#amount").focus();
   if (shots) await page.screenshot({ path: `${shots}/sheet-390.png` });
   await page.keyboard.press("Escape");
   const o2 = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

@@ -40,7 +40,7 @@ export function Modal({ open, onClose, title, children, variant = "dialog", wide
         className={`relative flex flex-col overflow-hidden border border-line bg-card shadow-2xl outline-none ${box}`}>
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <h2 className="text-base font-semibold">{title}</h2>
-          <button onClick={onClose} aria-label="Close" className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-elev hover:text-fg"><Icon name="close" /></button>
+          <button onClick={onClose} aria-label="Close" className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-white/10 hover:text-fg"><Icon name="close" /></button>
         </div>
         <div className="overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">{children}</div>
       </div>

@@ -128,7 +128,7 @@ export function TradeTicket({ m, book, value, onChange }: { m: Market; book: Off
                 {candidates.map((o) => (
                   <li key={o.id}>
                     <button type="button" onClick={() => { change({ offerId: o.id }); setChanging(false); }} aria-pressed={offer?.id === o.id}
-                      className={`flex min-h-9 w-full items-center justify-between px-3 text-sm hover:bg-elev ${offer?.id === o.id ? "text-brand" : ""}`}>
+                      className={`flex min-h-9 w-full items-center justify-between px-3 text-sm hover:bg-white/10 ${offer?.id === o.id ? "text-brand" : ""}`}>
                       <span className="font-semibold">{priceStr(o.price)} {sym}</span><span className="text-mute">{formatUnits(o.qty, 0, 4)} shares</span>
                     </button>
                   </li>

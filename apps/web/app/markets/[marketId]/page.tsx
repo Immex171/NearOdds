@@ -71,7 +71,7 @@ function Detail({ id }: { id: string }) {
           </div>
           <div className="flex shrink-0">
             <BookmarkButton id={m.id} />
-            <button onClick={copy} aria-label="Copy link" className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-elev hover:text-fg"><Icon name="link" /></button>
+            <button onClick={copy} aria-label="Copy link" className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-white/10 hover:text-fg"><Icon name="link" /></button>
           </div>
         </header>
 

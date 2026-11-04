@@ -16,7 +16,7 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 
 function Check({ label, count, checked, onChange }: { label: string; count: number; checked: boolean; onChange: () => void }) {
   return (
-    <label className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-lg px-1.5 text-sm hover:bg-elev">
+    <label className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-lg px-1.5 text-sm hover:bg-white/10">
       <input type="checkbox" checked={checked} onChange={onChange} className="h-4 w-4 accent-[#5265ff]" />
       <span className="flex-1">{label}</span>
       <span className="text-xs text-mute">{count}</span>
@@ -50,7 +50,7 @@ export function FilterRail({ f, onChange, markets, now, bookmarks }: {
       </Group>
       {hasActive(f) && (
         <button onClick={() => onChange({ ...f, status: [], period: [], tags: [], saved: false, q: "" })}
-          className="mt-3 w-full rounded-lg border border-line py-2 text-sm font-semibold hover:bg-elev">Clear filters</button>
+          className="mt-3 w-full rounded-lg border border-line py-2 text-sm font-semibold hover:bg-white/10">Clear filters</button>
       )}
     </div>
   );

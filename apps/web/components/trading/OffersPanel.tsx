@@ -40,7 +40,7 @@ export function OffersPanel({ book, market, account, loading, onPick, selectedId
       <button key={r.o.id} type="button" disabled={disabled} onClick={() => onPick(r.o)} data-offer-id={r.o.id} data-own={own || undefined} aria-pressed={sel}
         title={own ? `Your offer #${r.o.id}: cancel it from your portfolio` : `Offer #${r.o.id} by ${r.o.owner}`}
         aria-label={`${tone === "ask" ? "Buy" : "Sell"} ${outcome} offer at ${priceStr(r.o.price)}, ${formatUnits(r.o.qty, 0, 4)} shares${own ? ", your offer" : ""}`}
-        className={`relative grid w-full grid-cols-3 gap-2 overflow-hidden px-2 py-1.5 text-left text-[13px] ${disabled ? "cursor-not-allowed" : "hover:bg-elev"} ${sel ? "ring-1 ring-inset ring-brand" : ""} ${own ? "outline outline-1 -outline-offset-1 outline-brand/50" : ""}`}>
+        className={`relative grid w-full grid-cols-3 gap-2 overflow-hidden px-2 py-1.5 text-left text-[13px] ${disabled ? "cursor-not-allowed" : "hover:bg-white/10"} ${sel ? "ring-1 ring-inset ring-brand" : ""} ${own ? "outline outline-1 -outline-offset-1 outline-brand/50" : ""}`}>
         <span aria-hidden className={`absolute inset-y-0 right-0 ${tone === "ask" ? "bg-no/10" : "bg-yes/10"}`} style={{ width: `${w}%` }} />
         <span className={`relative font-semibold ${tone === "ask" ? "text-no" : "text-yes"}`}>{priceStr(r.o.price)}{own && <span className="ml-1.5 rounded bg-brand/25 px-1 text-[10px] font-semibold text-[#c5ccff]">YOU</span>}{sel && <span className="ml-1.5 rounded bg-brand px-1 text-[10px] font-semibold text-white">SELECTED</span>}</span>
         <span className="relative text-right">{formatUnits(r.o.qty, 0, 4)}</span>

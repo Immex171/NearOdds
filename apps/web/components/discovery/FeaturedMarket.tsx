@@ -27,8 +27,8 @@ export function FeaturedMarket({ markets }: { markets: Market[] | null }) {
         <span className="ml-auto flex items-center gap-1">
           {list.length > 1 && (
             <>
-              <button aria-label="Previous featured market" onClick={() => go(-1)} className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-elev hover:text-fg"><Icon name="left" /></button>
-              <button aria-label="Next featured market" onClick={() => go(1)} className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-elev hover:text-fg"><Icon name="right" /></button>
+              <button aria-label="Previous featured market" onClick={() => go(-1)} className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-white/10 hover:text-fg"><Icon name="left" /></button>
+              <button aria-label="Next featured market" onClick={() => go(1)} className="grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-white/10 hover:text-fg"><Icon name="right" /></button>
             </>
           )}
           <BookmarkButton id={m.id} />

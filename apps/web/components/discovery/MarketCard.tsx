@@ -10,7 +10,7 @@ export function MarketCard({ m }: { m: Market }) {
   const open = m.status === "open";
   const cta = "relative z-10 flex h-10 flex-1 items-center justify-center rounded-lg text-sm font-semibold transition-colors";
   return (
-    <article className="group relative flex min-h-[200px] flex-col rounded-[14px] border border-line bg-card p-3.5 transition-colors hover:border-[#3a424d] hover:bg-[#1c222a]">
+    <article className="group relative flex min-h-[200px] flex-col rounded-[14px] border border-line bg-card p-3.5 transition-colors hover:border-[#4a525d] hover:bg-white/5">
       <div className="flex items-start gap-3">
         <TopicIcon market={m} size={40} />
         <h3 className="min-w-0 flex-1 text-[15px] font-semibold leading-snug">

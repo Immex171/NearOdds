@@ -25,7 +25,7 @@ export function BookmarkButton({ id, className = "" }: { id: string; className?:
   return (
     <button type="button" aria-pressed={on} aria-label={on ? "Remove bookmark" : "Bookmark market"}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleBookmark(id); }}
-      className={`grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-elev hover:text-fg ${on ? "text-brand" : ""} ${className}`}>
+      className={`grid h-9 w-9 place-items-center rounded-lg text-mute hover:bg-white/10 hover:text-fg ${on ? "text-brand" : ""} ${className}`}>
       <Icon name={on ? "bookmarkFill" : "bookmark"} />
     </button>
   );
@@ -56,8 +56,8 @@ export function Badge({ children, tone = "neutral" }: { children: ReactNode; ton
 export function Btn({ variant = "primary", className = "", ...p }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "outline" | "danger" }) {
   const v = {
     primary: "bg-brand text-white hover:bg-[#6677ff] disabled:bg-elev disabled:text-mute",
-    ghost: "text-mute hover:bg-elev hover:text-fg",
-    outline: "border border-line text-fg hover:bg-elev disabled:text-mute",
+    ghost: "text-mute hover:bg-white/10 hover:text-fg",
+    outline: "border border-line text-fg hover:bg-white/10 disabled:text-mute",
     danger: "border border-no/40 text-no hover:bg-no-bg",
   }[variant];
   return <button {...p} className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold transition-colors ${v} ${className}`} />;

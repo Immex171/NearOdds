@@ -1,9 +1,9 @@
 @import "tailwindcss";
 
 @theme {
-  --color-page: #090d11;
-  --color-card: #191e25;
-  --color-elev: #202630;
+  --color-page: #000000;
+  --color-card: #000000;
+  --color-elev: #000000;
   --color-line: #2a3039;
   --color-fg: #f3f5f7;
   --color-mute: #9ba4ae;
@@ -25,7 +25,7 @@ button:disabled { cursor: not-allowed; }
 .num { font-variant-numeric: tabular-nums; }
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
-.skeleton { background: linear-gradient(90deg, var(--color-card), var(--color-elev), var(--color-card)); background-size: 200% 100%; animation: sk 1.4s linear infinite; border-radius: 10px; }
+.skeleton { background: linear-gradient(90deg, #0b0d10, #15191f, #0b0d10); background-size: 200% 100%; animation: sk 1.4s linear infinite; border-radius: 10px; }
 @keyframes sk { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } * { transition: none !important; } }
 input[type="number"]::-webkit-inner-spin-button { appearance: none; }

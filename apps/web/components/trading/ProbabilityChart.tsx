@@ -87,7 +87,7 @@ export function ProbabilityChart({ points, loading, error, compact = false, heig
             <div role="group" aria-label="Time range" className="flex gap-1">
               {RANGES.map((r) => (
                 <button key={r.key} aria-pressed={range === r.key} onClick={() => setRange(r.key)}
-                  className={`min-h-8 rounded-md px-2.5 text-xs font-semibold ${range === r.key ? "bg-elev text-fg" : "text-mute hover:text-fg"}`}>{r.key}</button>
+                  className={`min-h-8 rounded-md px-2.5 text-xs font-semibold ${range === r.key ? "bg-elev text-fg ring-1 ring-line" : "text-mute hover:text-fg"}`}>{r.key}</button>
               ))}
             </div>
           ) : <span />}

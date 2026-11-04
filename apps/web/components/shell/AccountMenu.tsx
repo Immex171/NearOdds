@@ -16,18 +16,18 @@ export function AccountMenu() {
     document.addEventListener("mousedown", off); document.addEventListener("keydown", esc);
     return () => { document.removeEventListener("mousedown", off); document.removeEventListener("keydown", esc); };
   }, []);
-  const item = "block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-elev";
+  const item = "block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-white/10";
   const close = () => setOpen(false);
   return (
     <div ref={ref} className="relative">
       {session.kind === "none" ? (
         <div className="flex items-center gap-1">
           <span className="hidden md:block"><Btn onClick={() => setConnectOpen(true)}>Connect wallet</Btn></span>
-          <button aria-label="Menu" aria-expanded={open} onClick={() => setOpen(!open)} className="grid h-10 w-10 place-items-center rounded-lg text-mute hover:bg-elev md:hidden"><Icon name="menu" /></button>
+          <button aria-label="Menu" aria-expanded={open} onClick={() => setOpen(!open)} className="grid h-10 w-10 place-items-center rounded-lg text-mute hover:bg-white/10 md:hidden"><Icon name="menu" /></button>
         </div>
       ) : (
         <button aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}
-          className="flex min-h-10 items-center gap-2 rounded-lg border border-line bg-card px-3 text-sm font-medium hover:bg-elev">
+          className="flex min-h-10 items-center gap-2 rounded-lg border border-line bg-card px-3 text-sm font-medium hover:bg-white/10">
           <Icon name="user" size={16} className="text-mute" />
           <span className="hidden max-w-[150px] truncate sm:inline">{session.kind === "demo" ? "Demo account" : shortAccount(accountId!)}</span>
           <Icon name="caret" size={16} className="text-mute" />

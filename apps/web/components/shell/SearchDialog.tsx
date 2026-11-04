@@ -45,7 +45,7 @@ export function SearchDialog() {
 
   return (
     <div ref={box} className={`relative min-w-0 flex-1 ${mobileOpen ? "" : "max-md:flex-none max-md:ml-auto"} md:max-w-[560px] md:mx-auto`}>
-      <button className={`grid h-10 w-10 place-items-center rounded-lg text-mute hover:bg-elev md:hidden ${mobileOpen ? "hidden" : ""}`} aria-label="Search markets"
+      <button className={`grid h-10 w-10 place-items-center rounded-lg text-mute hover:bg-white/10 md:hidden ${mobileOpen ? "hidden" : ""}`} aria-label="Search markets"
         onClick={() => { setMobileOpen(true); setTimeout(() => input.current?.focus(), 0); }}><Icon name="search" /></button>
       <div className={`${mobileOpen ? "flex" : "hidden"} md:flex relative items-center`}>
         <Icon name="search" className="pointer-events-none absolute left-3 text-mute" />

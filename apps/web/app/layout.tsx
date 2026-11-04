@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   title: "NearOdds — prediction markets on NEAR",
   description: "Browse binary prediction markets, compare odds and trade YES/NO outcomes on NEAR.",
 };
-export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#090D11" };
+export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#000000" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

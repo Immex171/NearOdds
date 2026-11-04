@@ -97,4 +97,29 @@ pub enum MarketEvent {
         released_collateral: U128,
         released_shares: U128,
     },
+    /// The trusted resolver set the final outcome. Irrevocable.
+    #[event_version("1.0.0")]
+    MarketResolved {
+        market_id: String,
+        outcome: Outcome,
+        resolver_id: AccountId,
+        resolved_at_ns: U64,
+        evidence: String,
+    },
+    /// A resolved position was settled into the internal available balance.
+    /// `payout` is ONLY the winning-share payout; collateral released from
+    /// cancelled buy offers is reported separately (and each cancelled offer
+    /// also emitted its own `offer_cancelled` event just before this one).
+    #[event_version("1.0.0")]
+    PositionRedeemed {
+        account_id: AccountId,
+        market_id: String,
+        outcome: Outcome,
+        winning_shares: U128,
+        losing_shares: U128,
+        payout: U128,
+        released_offers: u32,
+        released_collateral: U128,
+        released_shares: U128,
+    },
 }

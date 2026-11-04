@@ -1,27 +1,40 @@
-#![allow(unused_must_use)]
-//! Deployment smoke test: the SAME scenario runs on the local Sandbox (always)
-//! and on NEAR testnet (only when you provide a funded parent account).
+#![allow(unused_must_use, clippy::too_many_arguments)]
+//! Deployment harness. The SAME code runs on the local Sandbox (always, as
+//! `*_on_sandbox`) and on NEAR testnet (only when you provide a funded parent
+//! account; the `*_on_testnet` tests are `#[ignore]`d).
 //!
-//! Testnet run (see docs/testnet.md):
-//!   NEARODDS_TESTNET_PARENT=<funded testnet account id> \
-//!   NEARODDS_TESTNET_PARENT_KEY=ed25519:<its full-access secret key> \
-//!   cargo test -p nearodds-market --test testnet_smoke smoke_on_testnet -- --ignored --nocapture
+//! 1. `smoke_*`: a COMPLETE lifecycle on a throw-away market:
+//!    deposit -> split -> offer -> partial fills -> cancel -> resale ->
+//!    resolve -> redeem -> withdraw. The market is resolved at the end, so the
+//!    frontend must NOT use it. Facts go to `deployments/testnet.json`.
+//! 2. `demo_*`: a separate, persistent OPEN market with a long cutoff and
+//!    seeded liquidity for the frontend. Facts go to
+//!    `deployments/testnet-demo.json`.
 //!
-//! It creates fresh sub-accounts of the parent, deploys the production
-//! `market.wasm` and the `test_collateral.wasm` fixture (never the
-//! failure-injection build), runs deposit -> split -> offer -> partial fills ->
-//! cancel -> resale -> merge -> withdraw, and writes the facts to
-//! `deployments/testnet.json` (accounts, commit, hashes, tx hashes).
+//! Both deploy the production `market.wasm` (never the failure-injection
+//! build) and the `test_collateral.wasm` fixture. The parent account is the
+//! token owner and the market resolver. See docs/testnet.md.
 
 mod common;
 use common::*;
 
 use near_workspaces::result::ExecutionFinalResult;
 use near_workspaces::types::{Gas, NearToken, SecretKey};
-use near_workspaces::Network;
-use near_workspaces::{Account, Contract, Worker};
+use near_workspaces::{Account, Contract, Network, Worker};
 use serde_json::{json, Value};
 use std::process::Command;
+
+/// NEAR given to each created account (kept in sync with docs/testnet.md).
+const SMOKE_FUNDING_NEAR: [(&str, u128); 5] = [
+    ("token", 4),
+    ("market", 5),
+    ("alice", 2),
+    ("bob", 2),
+    ("carol", 2),
+];
+const DEMO_FUNDING_NEAR: [(&str, u128); 3] = [("token", 4), ("market", 5), ("lp", 3)];
+/// Spare NEAR the parent must keep for transaction fees.
+const FEE_MARGIN_NEAR: u128 = 3;
 
 struct Recorder {
     steps: Vec<Value>,
@@ -32,13 +45,37 @@ impl Recorder {
         let tx = r.outcome().transaction_hash.to_string();
         let full_ok = r.is_success() && r.receipt_failures().is_empty();
         println!(
-            "  {step:<34} {} {tx}",
+            "  {step:<38} {} {tx}",
             if full_ok { "OK  " } else { "FAIL" }
         );
         self.steps
             .push(json!({ "step": step, "tx_hash": tx, "succeeded": full_ok }));
         assert!(full_ok, "step {step} failed: {:#?}", r.failures());
     }
+}
+
+fn required_near(table: &[(&str, u128)]) -> u128 {
+    table.iter().map(|(_, n)| n).sum::<u128>() + FEE_MARGIN_NEAR
+}
+
+/// Fails early with a clear message if the parent cannot fund the run.
+async fn check_funding<T: Network + 'static>(
+    worker: &Worker<T>,
+    parent: &Account,
+    table: &[(&str, u128)],
+) {
+    let need = NearToken::from_near(required_near(table));
+    let have = worker.view_account(parent.id()).await.unwrap().balance;
+    println!(
+        "funding check: parent {} has {have}, needs {need}",
+        parent.id()
+    );
+    assert!(
+        have >= need,
+        "parent account {} holds {have} but this run needs {need} ({:?} + {FEE_MARGIN_NEAR} NEAR fee margin)",
+        parent.id(),
+        table
+    );
 }
 
 async fn user(parent: &Account, name: &str, near: u128) -> Account {
@@ -55,19 +92,32 @@ fn num(v: &Value, k: &str) -> u128 {
     v[k].as_str().unwrap().parse().unwrap()
 }
 
-/// Runs the full scenario. Returns the deployment facts.
-async fn run_smoke<T: Network + 'static>(worker: &Worker<T>, parent: &Account, tag: &str) -> Value {
-    let mut rec = Recorder { steps: vec![] };
-    let gas = Gas::from_tgas(100);
+struct Stack {
+    token: Contract,
+    market: Contract,
+    config: Value,
+    cutoff_ns: u64,
+    storage_cost: NearToken,
+}
 
-    let token_wasm = wasm("test_collateral");
-    let market_wasm = wasm("market");
-    let now = worker.view_block().await.unwrap().timestamp();
-    let cutoff_ns = now + 24 * 3600 * 1_000_000_000;
-
-    // Accounts and deployments.
-    let token_acct = user(parent, &format!("tok-{tag}"), 4).await;
-    let token = token_acct.deploy(&token_wasm).await.unwrap().unwrap();
+/// Creates and initializes the token and the market (deploy + init in one tx).
+async fn deploy_stack<T: Network + 'static>(
+    worker: &Worker<T>,
+    parent: &Account,
+    rec: &mut Recorder,
+    tag: &str,
+    prefix: &str,
+    table: &[(&str, u128)],
+    cutoff_secs: u64,
+    question: &str,
+) -> Stack {
+    let fund = |name: &str| table.iter().find(|(n, _)| *n == name).unwrap().1;
+    let token_acct = user(parent, &format!("tok-{prefix}{tag}"), fund("token")).await;
+    let token = token_acct
+        .deploy(&wasm("test_collateral"))
+        .await
+        .unwrap()
+        .unwrap();
     rec.record(
         "token: init",
         &token
@@ -77,21 +127,24 @@ async fn run_smoke<T: Network + 'static>(worker: &Worker<T>, parent: &Account, t
             .await
             .unwrap(),
     );
-
-    let market_acct = user(parent, &format!("mkt-{tag}"), 5).await;
+    let now = worker.view_block().await.unwrap().timestamp();
+    let cutoff_ns = now + cutoff_secs * 1_000_000_000;
+    let market_acct = user(parent, &format!("mkt-{prefix}{tag}"), fund("market")).await;
     let batch = market_acct
         .batch(market_acct.id())
-        .deploy(&market_wasm)
+        .deploy(&wasm("market"))
         .call(
             near_workspaces::operations::Function::new("new")
                 .args_json(json!({
                     "collateral_token": token.id(),
                     "market_id": MID,
-                    "question": "Will it rain in Lagos on 2026-12-01?",
-                    "rules": "Resolves YES if the NiMet daily report records measurable rain.",
+                    "question": question,
+                    "rules": "Resolves YES if the NiMet daily report records measurable rain in Lagos on 2026-12-01, otherwise NO. A trusted resolver sets the result; there is no VOID or dispute path.",
+                    "resolution_source": "NiMet daily weather report, Lagos, 2026-12-01",
                     "split_cutoff_ns": cutoff_ns.to_string(),
+                    "resolver_id": parent.id(),
                 }))
-                .gas(gas),
+                .gas(Gas::from_tgas(100)),
         )
         .transact()
         .await
@@ -102,70 +155,70 @@ async fn run_smoke<T: Network + 'static>(worker: &Worker<T>, parent: &Account, t
         market_acct.secret_key().clone(),
         worker,
     );
-
-    let alice = user(parent, &format!("alice-{tag}"), 2).await;
-    let bob = user(parent, &format!("bob-{tag}"), 2).await;
-    let carol = user(parent, &format!("carol-{tag}"), 2).await;
-
-    let cfg: Value = market.view("get_config").await.unwrap().json().unwrap();
-    let cost = NearToken::from_yoctonear(
-        cfg["storage_cost_per_account"]
+    let config: Value = market.view("get_config").await.unwrap().json().unwrap();
+    assert_eq!(config["resolver_id"], parent.id().to_string());
+    let storage_cost = NearToken::from_yoctonear(
+        config["storage_cost_per_account"]
             .as_str()
             .unwrap()
             .parse()
             .unwrap(),
     );
-    for id in [market.id(), alice.id(), bob.id(), carol.id()] {
+    Stack {
+        token,
+        market,
+        config,
+        cutoff_ns,
+        storage_cost,
+    }
+}
+
+impl Stack {
+    async fn register(&self, rec: &mut Recorder, parent: &Account, who: &Account) {
         rec.record(
             "token: storage_deposit",
             &parent
-                .call(token.id(), "storage_deposit")
-                .args_json(json!({ "account_id": id, "registration_only": true }))
+                .call(self.token.id(), "storage_deposit")
+                .args_json(json!({ "account_id": who.id(), "registration_only": true }))
                 .deposit(NearToken::from_millinear(10))
                 .transact()
                 .await
                 .unwrap(),
         );
-    }
-    for who in [&alice, &bob, &carol] {
         rec.record(
             "market: storage_deposit",
-            &who.call(market.id(), "storage_deposit")
+            &who.call(self.market.id(), "storage_deposit")
                 .args_json(json!({ "account_id": null, "registration_only": true }))
-                .deposit(cost)
+                .deposit(self.storage_cost)
                 .transact()
                 .await
                 .unwrap(),
         );
     }
-    for (who, amt) in [(&alice, 100), (&bob, 10), (&carol, 10)] {
+
+    async fn mint(
+        &self,
+        rec: &mut Recorder,
+        parent: &Account,
+        to: &near_workspaces::AccountId,
+        amt: u128,
+    ) {
         rec.record(
             "token: mint (fixture owner)",
             &parent
-                .call(token.id(), "mint")
-                .args_json(json!({ "account_id": who.id(), "amount": tok(amt) }))
+                .call(self.token.id(), "mint")
+                .args_json(json!({ "account_id": to, "amount": amt.to_string() }))
                 .transact()
                 .await
                 .unwrap(),
         );
     }
 
-    let call = |who: &Account, method: &str, args: Value| {
-        who.call(market.id(), method)
-            .args_json(args)
-            .deposit(YOCTO)
-            .gas(gas)
-            .transact()
-    };
-
-    // Deposit (real ft_transfer_call), split.
-    for (who, amt) in [(&alice, 100), (&bob, 10), (&carol, 10)] {
+    async fn deposit(&self, rec: &mut Recorder, who: &Account, amt: u128) {
         rec.record(
             "deposit (ft_transfer_call)",
-            &who.call(token.id(), "ft_transfer_call")
-                .args_json(
-                    json!({ "receiver_id": market.id(), "amount": tok(amt), "msg": "deposit" }),
-                )
+            &who.call(self.token.id(), "ft_transfer_call")
+                .args_json(json!({ "receiver_id": self.market.id(), "amount": amt.to_string(), "msg": "deposit" }))
                 .deposit(YOCTO)
                 .gas(MAX_GAS)
                 .transact()
@@ -173,25 +226,169 @@ async fn run_smoke<T: Network + 'static>(worker: &Worker<T>, parent: &Account, t
                 .unwrap(),
         );
     }
+
+    fn call(
+        &self,
+        who: &Account,
+        method: &str,
+        args: Value,
+    ) -> near_workspaces::operations::CallTransaction {
+        who.call(self.market.id(), method)
+            .args_json(args)
+            .deposit(YOCTO)
+            .gas(Gas::from_tgas(100))
+    }
+
+    async fn account(&self, id: &near_workspaces::AccountId) -> Value {
+        self.market
+            .view("get_account")
+            .args_json(json!({ "account_id": id }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
+    async fn token_balance(&self, id: &near_workspaces::AccountId) -> u128 {
+        let v: String = self
+            .token
+            .view("ft_balance_of")
+            .args_json(json!({ "account_id": id }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+        v.parse().unwrap()
+    }
+}
+
+fn git(args: &[&str]) -> String {
+    Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+async fn facts<T: Network + 'static>(
+    worker: &Worker<T>,
+    kind: &str,
+    parent: &Account,
+    stack: &Stack,
+    accounts: Value,
+    rec: Recorder,
+) -> Value {
+    let md: Value = stack
+        .token
+        .view("ft_metadata")
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    let state = |id: &near_workspaces::AccountId| {
+        let w = worker.clone();
+        let id = id.clone();
+        async move { format!("{:?}", w.view_account(&id).await.unwrap().contract_state) }
+    };
+    json!({
+        "kind": kind,
+        "network": std::any::type_name::<T>().rsplit("::").next().unwrap(),
+        "parent_account_token_owner_and_resolver": parent.id(),
+        "git_commit": git(&["rev-parse", "HEAD"]),
+        "git_dirty": !git(&["status", "--porcelain", "--", "contracts", "Cargo.toml", "Cargo.lock"]).is_empty(),
+        "accounts": accounts,
+        "market_id": MID,
+        "split_cutoff_ns": stack.cutoff_ns.to_string(),
+        "token_metadata": md,
+        "config": stack.config,
+        "onchain_contract_state": { "market": state(stack.market.id()).await, "token": state(stack.token.id()).await },
+        "steps": rec.steps,
+    })
+}
+
+/// Waits until chain time passes `ts_ns`. On the Sandbox the clock is pushed
+/// forward by fast-forwarding blocks; on testnet it just waits.
+async fn wait_past<T: Network + 'static>(
+    worker: &Worker<T>,
+    fast: Option<&Worker<near_workspaces::network::Sandbox>>,
+    ts_ns: u64,
+) {
+    for _ in 0..4000 {
+        if worker.view_block().await.unwrap().timestamp() > ts_ns {
+            return;
+        }
+        match fast {
+            Some(sb) => {
+                sb.fast_forward(20).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+            None => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+        }
+    }
+    panic!("chain time never passed {ts_ns}");
+}
+
+// ---------------------------------------------------------------------------
+// 1. Full-lifecycle smoke test
+// ---------------------------------------------------------------------------
+
+async fn run_smoke<T: Network + 'static>(
+    worker: &Worker<T>,
+    fast: Option<&Worker<near_workspaces::network::Sandbox>>,
+    parent: &Account,
+    tag: &str,
+    cutoff_secs: u64,
+) -> Value {
+    check_funding(worker, parent, &SMOKE_FUNDING_NEAR).await;
+    let mut rec = Recorder { steps: vec![] };
+    let stack = deploy_stack(
+        worker,
+        parent,
+        &mut rec,
+        tag,
+        "",
+        &SMOKE_FUNDING_NEAR,
+        cutoff_secs,
+        "Will it rain in Lagos on 2026-12-01? (smoke-test market)",
+    )
+    .await;
+    let fund = |n: &str| SMOKE_FUNDING_NEAR.iter().find(|(x, _)| *x == n).unwrap().1;
+    let alice = user(parent, &format!("alice-{tag}"), fund("alice")).await;
+    let bob = user(parent, &format!("bob-{tag}"), fund("bob")).await;
+    let carol = user(parent, &format!("carol-{tag}"), fund("carol")).await;
+    rec.record(
+        "token: register market",
+        &parent
+            .call(stack.token.id(), "storage_deposit")
+            .args_json(json!({ "account_id": stack.market.id(), "registration_only": true }))
+            .deposit(NearToken::from_millinear(10))
+            .transact()
+            .await
+            .unwrap(),
+    );
+    for (who, amt) in [(&alice, 100), (&bob, 10), (&carol, 10)] {
+        stack.register(&mut rec, parent, who).await;
+        stack.mint(&mut rec, parent, who.id(), amt * ONE).await;
+    }
+    for (who, amt) in [(&alice, 100), (&bob, 10), (&carol, 10)] {
+        stack.deposit(&mut rec, who, amt * ONE).await;
+    }
+
+    // Split, offer, partial fills, cancel, resale.
     rec.record(
         "alice: split 100",
-        &call(
-            &alice,
-            "split_position",
-            json!({ "market_id": MID, "amount": tok(100) }),
-        )
-        .await
-        .unwrap(),
+        &stack
+            .call(
+                &alice,
+                "split_position",
+                json!({ "market_id": MID, "amount": tok(100) }),
+            )
+            .transact()
+            .await
+            .unwrap(),
     );
-
-    // Trade: offer, two partial fills, cancel remainder, resale.
-    let r = call(
-        &alice,
-        "create_offer",
-        json!({ "market_id": MID, "outcome": "Yes", "side": "Sell", "price": "600000", "quantity": tok(20) }),
-    )
-    .await
-    .unwrap();
+    let r = stack.call(&alice, "create_offer", json!({ "market_id": MID, "outcome": "Yes", "side": "Sell", "price": "600000", "quantity": tok(20) })).transact().await.unwrap();
     rec.record("alice: create_offer 20 YES @0.60", &r);
     let id = r.json::<Value>().unwrap()["offer_id"]
         .as_str()
@@ -199,37 +396,37 @@ async fn run_smoke<T: Network + 'static>(worker: &Worker<T>, parent: &Account, t
         .to_string();
     rec.record(
         "bob: fill 8",
-        &call(
-            &bob,
-            "fill_offer",
-            json!({ "offer_id": id, "quantity": tok(8) }),
-        )
-        .await
-        .unwrap(),
-    );
-    rec.record(
-        "carol: fill 5",
-        &call(
-            &carol,
-            "fill_offer",
-            json!({ "offer_id": id, "quantity": tok(5) }),
-        )
-        .await
-        .unwrap(),
-    );
-    rec.record(
-        "alice: cancel remainder (7)",
-        &call(&alice, "cancel_offer", json!({ "offer_id": id }))
+        &stack
+            .call(
+                &bob,
+                "fill_offer",
+                json!({ "offer_id": id, "quantity": tok(8) }),
+            )
+            .transact()
             .await
             .unwrap(),
     );
-    let r = call(
-        &bob,
-        "create_offer",
-        json!({ "market_id": MID, "outcome": "Yes", "side": "Sell", "price": "700000", "quantity": tok(3) }),
-    )
-    .await
-    .unwrap();
+    rec.record(
+        "carol: fill 5",
+        &stack
+            .call(
+                &carol,
+                "fill_offer",
+                json!({ "offer_id": id, "quantity": tok(5) }),
+            )
+            .transact()
+            .await
+            .unwrap(),
+    );
+    rec.record(
+        "alice: cancel remainder (7)",
+        &stack
+            .call(&alice, "cancel_offer", json!({ "offer_id": id }))
+            .transact()
+            .await
+            .unwrap(),
+    );
+    let r = stack.call(&bob, "create_offer", json!({ "market_id": MID, "outcome": "Yes", "side": "Sell", "price": "700000", "quantity": tok(3) })).transact().await.unwrap();
     rec.record("bob: resell offer 3 YES @0.70", &r);
     let id2 = r.json::<Value>().unwrap()["offer_id"]
         .as_str()
@@ -237,149 +434,305 @@ async fn run_smoke<T: Network + 'static>(worker: &Worker<T>, parent: &Account, t
         .to_string();
     rec.record(
         "carol: fill resale 3",
-        &call(
-            &carol,
-            "fill_offer",
-            json!({ "offer_id": id2, "quantity": tok(3) }),
-        )
-        .await
-        .unwrap(),
+        &stack
+            .call(
+                &carol,
+                "fill_offer",
+                json!({ "offer_id": id2, "quantity": tok(3) }),
+            )
+            .transact()
+            .await
+            .unwrap(),
     );
 
-    // Verify the documented acceptance balances (collateral, YES, NO).
-    let snap = |a: Value| {
-        (
-            num(&a, "available_collateral"),
-            num(&a, "yes"),
-            num(&a, "no"),
-        )
-    };
-    let acct = |id: &near_workspaces::AccountId| {
-        let m = market.clone();
-        let id = id.clone();
-        async move {
-            let v: Value = m
-                .view("get_account")
-                .args_json(json!({ "account_id": id }))
-                .await
-                .unwrap()
-                .json()
-                .unwrap();
-            v
-        }
-    };
+    let snap = |a: &Value| (num(a, "available_collateral"), num(a, "yes"), num(a, "no"));
     assert_eq!(
-        snap(acct(alice.id()).await),
+        snap(&stack.account(alice.id()).await),
         (7_800_000, 87 * ONE, 100 * ONE)
     );
-    assert_eq!(snap(acct(bob.id()).await), (7_300_000, 5 * ONE, 0));
-    assert_eq!(snap(acct(carol.id()).await), (4_900_000, 8 * ONE, 0));
-    let totals: Value = market.view("get_totals").await.unwrap().json().unwrap();
-    assert_eq!(num(&totals, "market_backing"), 100 * ONE);
-    assert_eq!(num(&totals, "reserved_yes"), 0);
-    assert_eq!(num(&totals, "open_offers"), 0);
-
-    // Merge and withdraw.
-    rec.record(
-        "alice: merge 87",
-        &call(
-            &alice,
-            "merge_positions",
-            json!({ "market_id": MID, "amount": tok(87) }),
-        )
-        .await
-        .unwrap(),
+    assert_eq!(
+        snap(&stack.account(bob.id()).await),
+        (7_300_000, 5 * ONE, 0)
     );
-    rec.record(
-        "alice: withdraw 94.8",
-        &call(
-            &alice,
-            "withdraw",
-            json!({ "amount": (7_800_000 + 87 * ONE).to_string() }),
-        )
-        .await
-        .unwrap(),
+    assert_eq!(
+        snap(&stack.account(carol.id()).await),
+        (4_900_000, 8 * ONE, 0)
     );
-    rec.record(
-        "bob: withdraw 7.3",
-        &call(&bob, "withdraw", json!({ "amount": "7300000" }))
-            .await
-            .unwrap(),
-    );
-    rec.record(
-        "carol: withdraw 4.9",
-        &call(&carol, "withdraw", json!({ "amount": "4900000" }))
-            .await
-            .unwrap(),
-    );
-    let bal = |id: &near_workspaces::AccountId| {
-        let t = token.clone();
-        let id = id.clone();
-        async move {
-            let v: String = t
-                .view("ft_balance_of")
-                .args_json(json!({ "account_id": id }))
-                .await
-                .unwrap()
-                .json()
-                .unwrap();
-            v.parse::<u128>().unwrap()
-        }
-    };
-    assert_eq!(bal(alice.id()).await, 94_800_000);
-    assert_eq!(bal(bob.id()).await, 7_300_000);
-    assert_eq!(bal(carol.id()).await, 4_900_000);
-    assert_eq!(bal(market.id()).await, 13 * ONE);
-    let wd: Value = market
-        .view("get_withdrawal")
-        .args_json(json!({ "account_id": alice.id() }))
+    let totals: Value = stack
+        .market
+        .view("get_totals")
         .await
         .unwrap()
         .json()
         .unwrap();
-    assert_eq!(wd["status"], "Completed");
+    assert_eq!(num(&totals, "market_backing"), 100 * ONE);
+    assert_eq!(num(&totals, "open_offers"), 0);
+    assert!(
+        worker.view_block().await.unwrap().timestamp() < stack.cutoff_ns,
+        "trading finished after the cutoff; raise the smoke cutoff"
+    );
 
-    // Facts.
-    let code_hash = |id: &near_workspaces::AccountId| {
-        let w = worker.clone();
-        let id = id.clone();
-        async move { format!("{:?}", w.view_account(&id).await.unwrap().contract_state) }
-    };
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .args(args)
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default()
-    };
-    let md: Value = token.view("ft_metadata").await.unwrap().json().unwrap();
-    json!({
-        "network": format!("{:?}", std::any::type_name::<T>()).rsplit("::").next().unwrap().trim_matches('"'),
-        "parent_account": parent.id(),
-        "git_commit": git(&["rev-parse", "HEAD"]),
-        "git_dirty": !git(&["status", "--porcelain", "--", "contracts", "Cargo.toml", "Cargo.lock"]).is_empty(),
-        "accounts": {
-            "market": market.id(), "token": token.id(),
-            "alice": alice.id(), "bob": bob.id(), "carol": carol.id(),
-        },
-        "market_id": MID,
-        "split_cutoff_ns": cutoff_ns.to_string(),
-        "token_metadata": md,
-        "config": cfg,
-        "onchain_contract_state": {
-            "market": code_hash(market.id()).await,
-            "token": code_hash(token.id()).await,
-        },
-        "steps": rec.steps,
-    })
+    // Resolution: refused early, then YES by the configured resolver (parent).
+    let early = stack
+        .call(
+            parent,
+            "resolve_market",
+            json!({ "market_id": MID, "outcome": "Yes", "evidence": "too early" }),
+        )
+        .transact()
+        .await
+        .unwrap();
+    assert!(
+        early.is_failure() || !early.receipt_failures().is_empty(),
+        "resolution before the cutoff must fail"
+    );
+    wait_past(worker, fast, stack.cutoff_ns).await;
+    rec.record(
+        "resolver: resolve YES",
+        &stack
+            .call(parent, "resolve_market", json!({ "market_id": MID, "outcome": "Yes", "evidence": "https://nimet.example/report/2026-12-01 (smoke test)" }))
+            .transact()
+            .await
+            .unwrap(),
+    );
+    let m: Value = stack
+        .market
+        .view("get_market")
+        .args_json(json!({ "market_id": MID }))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(m["status"], "Resolved");
+    assert_eq!(m["resolution"]["outcome"], "Yes");
+
+    // Redeem (each user), then withdraw.
+    for (name, who) in [("alice", &alice), ("bob", &bob), ("carol", &carol)] {
+        rec.record(
+            &format!("{name}: redeem"),
+            &stack
+                .call(who, "redeem", json!({ "market_id": MID }))
+                .transact()
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(snap(&stack.account(alice.id()).await).0, 94_800_000);
+    assert_eq!(snap(&stack.account(bob.id()).await).0, 12_300_000);
+    assert_eq!(snap(&stack.account(carol.id()).await).0, 12_900_000);
+    let totals: Value = stack
+        .market
+        .view("get_totals")
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(num(&totals, "market_backing"), 0);
+    assert_eq!(num(&totals, "available_collateral"), 120 * ONE);
+    for (name, who, amt) in [
+        ("alice", &alice, 94_800_000u128),
+        ("bob", &bob, 12_300_000),
+        ("carol", &carol, 12_900_000),
+    ] {
+        rec.record(
+            &format!("{name}: withdraw"),
+            &stack
+                .call(who, "withdraw", json!({ "amount": amt.to_string() }))
+                .transact()
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(stack.token_balance(alice.id()).await, 94_800_000);
+    assert_eq!(stack.token_balance(bob.id()).await, 12_300_000);
+    assert_eq!(stack.token_balance(carol.id()).await, 12_900_000);
+    assert_eq!(stack.token_balance(stack.market.id()).await, 0);
+
+    let accounts = json!({ "market": stack.market.id(), "token": stack.token.id(), "alice": alice.id(), "bob": bob.id(), "carol": carol.id() });
+    facts(
+        worker,
+        "smoke-test (market is RESOLVED; do not use for the frontend)",
+        parent,
+        &stack,
+        accounts,
+        rec,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// 2. Persistent open demo market for the frontend
+// ---------------------------------------------------------------------------
+
+/// `mint_to`: `(account id, whole tokens)` demo users who get test tokens.
+async fn run_demo<T: Network + 'static>(
+    worker: &Worker<T>,
+    parent: &Account,
+    tag: &str,
+    cutoff_secs: u64,
+    mint_to: &[(near_workspaces::AccountId, u128)],
+) -> Value {
+    check_funding(worker, parent, &DEMO_FUNDING_NEAR).await;
+    let mut rec = Recorder { steps: vec![] };
+    let stack = deploy_stack(
+        worker,
+        parent,
+        &mut rec,
+        tag,
+        "demo-",
+        &DEMO_FUNDING_NEAR,
+        cutoff_secs,
+        "Will it rain in Lagos on 2026-12-01?",
+    )
+    .await;
+    let lp = user(parent, &format!("lp-demo-{tag}"), 3).await;
+    rec.record(
+        "token: register market",
+        &parent
+            .call(stack.token.id(), "storage_deposit")
+            .args_json(json!({ "account_id": stack.market.id(), "registration_only": true }))
+            .deposit(NearToken::from_millinear(10))
+            .transact()
+            .await
+            .unwrap(),
+    );
+    stack.register(&mut rec, parent, &lp).await;
+    stack.mint(&mut rec, parent, lp.id(), 200 * ONE).await;
+    stack.deposit(&mut rec, &lp, 200 * ONE).await;
+    rec.record(
+        "lp: split 100",
+        &stack
+            .call(
+                &lp,
+                "split_position",
+                json!({ "market_id": MID, "amount": tok(100) }),
+            )
+            .transact()
+            .await
+            .unwrap(),
+    );
+    // Liquidity: YES and NO sell ladders and a YES bid (reserves 100 - the rest stays free).
+    for (outcome, side, price, qty) in [
+        ("Yes", "Sell", 650_000u128, 10u128),
+        ("Yes", "Sell", 700_000, 10),
+        ("Yes", "Sell", 750_000, 10),
+        ("No", "Sell", 350_000, 10),
+        ("No", "Sell", 400_000, 10),
+        ("Yes", "Buy", 550_000, 10),
+        ("Yes", "Buy", 500_000, 10),
+    ] {
+        rec.record(
+            &format!("lp: {side} {qty} {outcome} @{}", price as f64 / 1e6),
+            &stack
+                .call(&lp, "create_offer", json!({ "market_id": MID, "outcome": outcome, "side": side, "price": price.to_string(), "quantity": tok(qty) }))
+                .transact()
+                .await
+                .unwrap(),
+        );
+    }
+    // Test tokens for demo users (they must also register with the token + market themselves).
+    for (id, whole) in mint_to {
+        rec.record(
+            "token: register demo user",
+            &parent
+                .call(stack.token.id(), "storage_deposit")
+                .args_json(json!({ "account_id": id, "registration_only": true }))
+                .deposit(NearToken::from_millinear(10))
+                .transact()
+                .await
+                .unwrap(),
+        );
+        stack.mint(&mut rec, parent, id, whole * ONE).await;
+    }
+    let m: Value = stack
+        .market
+        .view("get_market")
+        .args_json(json!({ "market_id": MID }))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(m["status"], "Open");
+    let yes_sells: Vec<Value> = stack
+        .market
+        .view("list_offers")
+        .args_json(json!({ "market_id": MID, "outcome": "Yes", "side": "Sell" }))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(yes_sells.len(), 3);
+    let accounts = json!({ "market": stack.market.id(), "token": stack.token.id(), "liquidity_provider": lp.id(), "resolver_and_token_owner": parent.id(), "minted_demo_users": mint_to.iter().map(|(a, n)| json!({"account": a, "tokens": n})).collect::<Vec<_>>() });
+    facts(
+        worker,
+        "persistent OPEN demo market for the frontend",
+        parent,
+        &stack,
+        accounts,
+        rec,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
+
+fn testnet_parent(worker: &Worker<near_workspaces::network::Testnet>) -> Account {
+    let parent_id = std::env::var("NEARODDS_TESTNET_PARENT")
+        .expect("set NEARODDS_TESTNET_PARENT to a funded testnet account id");
+    let key: SecretKey = std::env::var("NEARODDS_TESTNET_PARENT_KEY")
+        .expect("set NEARODDS_TESTNET_PARENT_KEY to its ed25519 secret key")
+        .parse()
+        .expect("invalid secret key");
+    Account::from_secret_key(parent_id.parse().unwrap(), key, worker)
+}
+
+fn unique_tag() -> String {
+    let s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    format!("{}", s % 10_000_000)
+}
+
+fn write_facts(default_name: &str, env_var: &str, facts: &Value) {
+    let out = std::env::var(env_var).unwrap_or_else(|_| {
+        format!(
+            "{}/../../deployments/{default_name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    });
+    std::fs::create_dir_all(std::path::Path::new(&out).parent().unwrap()).unwrap();
+    std::fs::write(&out, serde_json::to_string_pretty(facts).unwrap()).unwrap();
+    println!("wrote {out}");
 }
 
 #[tokio::test]
 async fn smoke_on_sandbox() {
     let worker = near_workspaces::sandbox().await.unwrap();
     let root = worker.root_account().unwrap();
-    let facts = run_smoke(&worker, &root, "sbx").await;
+    let facts = run_smoke(&worker, Some(&worker), &root, "sbx", 120).await;
+    assert!(facts["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["succeeded"] == true));
+}
+
+#[tokio::test]
+async fn demo_on_sandbox() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let user = new_user(&root, "demouser").await;
+    let facts = run_demo(
+        &worker,
+        &root,
+        "sbx",
+        7 * 86_400,
+        &[(user.id().clone(), 50)],
+    )
+    .await;
     assert!(facts["steps"]
         .as_array()
         .unwrap()
@@ -390,30 +743,34 @@ async fn smoke_on_sandbox() {
 #[tokio::test]
 #[ignore = "needs NEARODDS_TESTNET_PARENT and NEARODDS_TESTNET_PARENT_KEY (funded testnet account)"]
 async fn smoke_on_testnet() {
-    let parent_id = std::env::var("NEARODDS_TESTNET_PARENT")
-        .expect("set NEARODDS_TESTNET_PARENT to a funded testnet account id");
-    let key: SecretKey = std::env::var("NEARODDS_TESTNET_PARENT_KEY")
-        .expect("set NEARODDS_TESTNET_PARENT_KEY to its ed25519 secret key")
-        .parse()
-        .expect("invalid secret key");
     let worker = near_workspaces::testnet().await.unwrap();
-    let parent = Account::from_secret_key(parent_id.parse().unwrap(), key, &worker);
-    let tag = format!(
-        "{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            % 10_000_000
-    );
-    let facts = run_smoke(&worker, &parent, &tag).await;
-    let out = std::env::var("NEARODDS_DEPLOYMENT_OUT").unwrap_or_else(|_| {
-        format!(
-            "{}/../../deployments/testnet.json",
-            env!("CARGO_MANIFEST_DIR")
-        )
-    });
-    std::fs::create_dir_all(std::path::Path::new(&out).parent().unwrap()).unwrap();
-    std::fs::write(&out, serde_json::to_string_pretty(&facts).unwrap()).unwrap();
-    println!("wrote {out}");
+    let parent = testnet_parent(&worker);
+    // 10 minutes: enough for ~40 testnet transactions, then the harness waits for the cutoff.
+    let facts = run_smoke(&worker, None, &parent, &unique_tag(), 600).await;
+    write_facts("testnet.json", "NEARODDS_DEPLOYMENT_OUT", &facts);
+}
+
+#[tokio::test]
+#[ignore = "needs NEARODDS_TESTNET_PARENT and NEARODDS_TESTNET_PARENT_KEY (funded testnet account)"]
+async fn demo_on_testnet() {
+    let worker = near_workspaces::testnet().await.unwrap();
+    let parent = testnet_parent(&worker);
+    let days: u64 = std::env::var("NEARODDS_DEMO_CUTOFF_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7);
+    // NEARODDS_DEMO_MINT="alice.testnet:100,bob.testnet:50"
+    let mint: Vec<(near_workspaces::AccountId, u128)> = std::env::var("NEARODDS_DEMO_MINT")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|p| {
+            let (a, n) = p
+                .split_once(':')
+                .expect("NEARODDS_DEMO_MINT entries look like account:tokens");
+            (a.trim().parse().unwrap(), n.trim().parse().unwrap())
+        })
+        .collect();
+    let facts = run_demo(&worker, &parent, &unique_tag(), days * 86_400, &mint).await;
+    write_facts("testnet-demo.json", "NEARODDS_DEMO_OUT", &facts);
 }

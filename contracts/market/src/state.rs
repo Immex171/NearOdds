@@ -6,7 +6,7 @@ use near_sdk::borsh::BorshSerialize;
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{near, AccountId, BorshStorageKey, PanicOnDefault};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -24,8 +24,21 @@ pub struct Market {
     pub id: String,
     pub question: String,
     pub rules: String,
+    /// Where the outcome will be checked (fixed at creation, <= 512 bytes).
+    pub resolution_source: String,
     /// Splitting is allowed only while `block_timestamp < split_cutoff_ns`.
     pub split_cutoff_ns: u64,
+}
+
+/// The final, irrevocable result. Written once by the configured resolver.
+#[near(serializers=[borsh])]
+#[derive(Clone)]
+pub struct Resolution {
+    pub outcome: Outcome,
+    pub resolver: AccountId,
+    pub resolved_at_ns: u64,
+    /// Bounded (<= 512 bytes) evidence / source reference.
+    pub evidence: String,
 }
 
 /// How the most recent withdrawal of an account ended. One byte on disk.
@@ -138,6 +151,10 @@ pub struct Contract {
     /// Immutable approved NEP-141 collateral token.
     pub(crate) collateral_token: AccountId,
     pub(crate) market: Market,
+    /// Trusted resolver account, fixed at initialization.
+    pub(crate) resolver: AccountId,
+    /// `Some` once resolved. Never replaced.
+    pub(crate) resolution: Option<Resolution>,
     pub(crate) totals: Totals,
     pub(crate) next_withdrawal_id: u64,
     pub(crate) accounts: LookupMap<AccountId, Account>,

@@ -38,3 +38,12 @@ pub const ERR_FILL_EXCEEDS_REMAINING: &str = "fill quantity exceeds the offer's 
 pub const ERR_INEXACT_COST: &str = "internal error: cost is not exactly representable";
 pub const ERR_INSUFFICIENT_RESERVE: &str =
     "internal error: reserve is smaller than the amount to release";
+
+// ---- resolution and redemption (Milestone 3) ----
+pub const ERR_NOT_RESOLVER: &str = "only the configured resolver can resolve the market";
+pub const ERR_RESOLVE_TOO_EARLY: &str = "the market cannot be resolved before its cutoff";
+pub const ERR_ALREADY_RESOLVED: &str = "the market is already resolved; the result is final";
+pub const ERR_BAD_EVIDENCE: &str = "evidence must be 1 to 512 bytes";
+pub const ERR_NOT_RESOLVED: &str = "the market is not resolved yet";
+pub const ERR_MARKET_RESOLVED: &str = "the market is resolved: this action is no longer available";
+pub const ERR_NOTHING_TO_REDEEM: &str = "nothing to redeem: no shares and no open offers";

@@ -5,15 +5,16 @@ strings in base units (6 decimals: `"1000000"` = 1 token/share). Timestamps are
 `U64` nanoseconds. "1 yocto" means exactly 1 yoctoNEAR attached — a full-access-key
 authorization step that is kept by the contract and is **not** collateral.
 
-Not implemented (and not stubbed): market creation, resolution, redemption,
+Not implemented (and not stubbed): market creation, VOID/dispute settlement,
 unregistration, `storage_withdraw`, upgrades or admin refunds. Trading is described in
 "Milestone 2" below. The
 storage methods are a *subset* of NEP-145; full compliance is not claimed.
 
 ## Initialization
 
-`new(collateral_token: AccountId, market_id: String, question: String, rules: String, split_cutoff_ns: U64)` — `#[init]`, once.
-`market_id` 1–64 bytes; `question` 1–512; `rules` ≤ 2048; cutoff must be in the future.
+`new(collateral_token: AccountId, market_id: String, question: String, rules: String, resolution_source: String, split_cutoff_ns: U64, resolver_id: AccountId)` — `#[init]`, once.
+`market_id` 1–64 bytes; `question` 1–512; `rules` ≤ 2048; `resolution_source` 1–512; cutoff must be in the future.
+The resolver is fixed here, before any trading, and is shown in `get_config` and `get_market` (Milestone 3).
 Terms are immutable afterwards. Deploy and init in one batch transaction.
 
 ## Registration (payable)
@@ -89,7 +90,7 @@ shares and **internal** collateral between accounts inside this contract; it nev
 another contract, never mints shares, and never touches the market backing. Deposits and
 withdrawals remain the only token transfers. **Trading fees are zero.**
 
-Schema version is now `2`. Share and collateral balances are split into *available* and *reserved*.
+Schema version was bumped to `2` for Milestone 2 (now `3`, see Milestone 3). Share and collateral balances are split into *available* and *reserved*.
 
 ## Units, precision and limits
 
@@ -281,3 +282,141 @@ withdrawal is unconfirmed. Treat the states differently:
 
 `FailedRestored` is a *settled* outcome that changes the numbers; `Pending` is *unresolved* and the
 amount is excluded from `available_collateral`. Pending amounts are also summed in `get_totals().pending_withdrawals`.
+
+---
+
+# Milestone 3 — Resolution and redemption (implemented)
+
+**Trust model: manually resolved MVP.** One account, `resolver_id`, fixed at initialization and visible in
+`get_config()` / `get_market()`, sets the final **YES or NO** once, at or after the cutoff, together with a
+bounded evidence reference. The contract records the evidence but cannot verify it: participants trust the
+resolver. **VOID/invalid settlement, disputes, challenge periods and 50/50 payouts are not supported.** Use
+clearly resolvable questions. The question, rules and `resolution_source` are fixed at creation and never change.
+
+Schema version is `3`.
+
+## Lifecycle
+
+| `get_market().status` | When | Allowed | Blocked |
+| - | - | - | - |
+| `Open` | `block_timestamp < cutoff` and unresolved | deposit, split, merge, create/fill/cancel offers, withdraw | resolve, redeem |
+| `AwaitingResolution` | `now >= cutoff`, unresolved | merge, cancel, deposit, withdraw, **resolve (resolver only)** | split, create/fill offers, redeem |
+| `Resolved` | after `resolve_market` | cancel, **redeem**, deposit, withdraw | split, merge, create/fill offers, resolve again |
+
+The cutoff boundary is inclusive for resolution: at exactly `now == cutoff` the market is closed **and**
+resolvable. Flags in `get_market`: `trading_open`, `split_open`, `merge_open`, `awaiting_resolution`, `resolved`.
+`trading_open` is `false` once resolved even if the cutoff is far away (not possible today, since resolution
+requires the cutoff, but the flag is the single source for the UI).
+
+## Units and conversion
+
+* A winning share pays exactly **1 collateral base unit per share base unit** (1 whole share = 1 whole token =
+  `"1000000"`). Losing shares pay zero. There is no rounding and no fractional payout.
+* `redeem` credits the **internal** `available_collateral`. No token transfer happens; withdraw afterwards.
+* Reserved collateral released from Buy offers is **not** payout. It is reported separately
+  (`released_collateral`) and credited once. Total credited to `available_collateral` =
+  `payout + released_collateral`.
+
+## `resolve_market`
+
+`resolve_market(market_id: String, outcome: "Yes" | "No", evidence: String) -> ResolutionView`
+
+Payable, exactly **1 yoctoNEAR**, ~30 Tgas. Only `resolver_id`; only if `block_timestamp >= cutoff`; only once.
+`evidence` is 1–512 bytes (URL, hash or note; whitespace-only is rejected). Result:
+
+```json
+{ "outcome": "Yes", "resolver_id": "resolver.testnet",
+  "resolved_at_ns": "1762272000000000000",
+  "evidence": "https://nimet.example/report/2026-12-01" }
+```
+
+Measured storage growth: 547 bytes with a 512-byte evidence string (74 bytes with a short one). The market
+account pays this from its own balance, so keep it funded (a few NEAR beyond code storage).
+
+## `redeem`
+
+`redeem(market_id: String) -> RedeemResult` — payable, exactly **1 yoctoNEAR**. Atomic and bounded (no iteration
+over accounts or offers; at most 10 of the caller's own offers). In one receipt it:
+
+1. cancels all of the caller's open offers (Buy: collateral back to available; Sell: shares back to available),
+   emitting an `offer_cancelled` event per offer;
+2. burns **all** the caller's YES and NO shares;
+3. credits the winning shares 1:1 to `available_collateral` and reduces `market_backing` by exactly that payout.
+   Losing shares release no backing.
+
+Fails with `nothing to redeem: no shares and no open offers` for a repeat call (never pays twice) and with
+`the market is not resolved yet` before resolution.
+
+```json
+{ "outcome": "Yes",
+  "winning_shares": "87000000", "losing_shares": "100000000",
+  "payout": "87000000",
+  "released_offers": [ { "offer_id": "8", "remaining_quantity": "10000000",
+                         "released_collateral": "6000000", "released_shares": "0" } ],
+  "released_collateral": "6000000", "released_shares": "0",
+  "available_collateral": "100800000", "yes": "0", "no": "0" }
+```
+
+`released_shares` is the combined YES+NO share base units returned by cancelled Sell offers; they are settled in
+the same call (counted in `winning_shares` / `losing_shares`). `available_collateral` is the final balance.
+
+Measured gas (Sandbox, real Wasm): **6.9 Tgas** burned with all ten offer slots occupied (4 Sell YES, 3 Sell NO,
+3 Buy YES), 2.1 Tgas with none. Attach 100 Tgas as for the other calls.
+
+## `get_redemption_preview(account_id) -> RedemptionPreview` (view)
+
+What `redeem` would do right now. Before resolution `resolved` is `false` and everything is zero.
+
+```json
+{ "resolved": true, "outcome": "Yes", "redeemable": true,
+  "offers_to_release": [ /* OfferView[], at most 10 */ ],
+  "released_collateral": "6000000", "released_shares": "0",
+  "winning_shares": "87000000", "losing_shares": "100000000",
+  "payout": "87000000",
+  "available_collateral_after": "100800000" }
+```
+
+`winning_shares` / `losing_shares` already include shares currently reserved by Sell offers (they are released
+first). `payout == winning_shares`. `available_collateral_after = available + released_collateral + payout`.
+`redeemable` is `false` when unresolved, unregistered, or nothing remains (no shares, no offers).
+
+## Other view changes
+
+* `get_config()` adds `resolver_id` and `resolution_model` (a constant plain-language trust statement).
+* `get_market()` adds `status`, `awaiting_resolution`, `resolved`, `merge_open`, `resolver_id`,
+  `resolution_source`, and `resolution` (`null` until resolved, else the `ResolutionView` above).
+  `split_open` is `false` once resolved.
+* Balances after settlement: `get_account` / `get_position` as before (shares are `"0"` after `redeem`).
+  `get_totals().outstanding_yes/no` may now differ, and `market_backing` equals the outstanding **winning** supply.
+* Offers read as `Expired` / `fillable: false` after resolution until cancelled or redeemed.
+* **`get_offer` returning `null` means only "no active offer record"** (never existed, fully filled, cancelled, or
+  released by `redeem`). It is not proof of any particular history; use events or method results for that.
+
+## Events (NEP-297, standard `nearodds_market`, version `1.0.0`)
+
+| Event | Data |
+| - | - |
+| `market_resolved` | `market_id, outcome, resolver_id, resolved_at_ns, evidence` |
+| `position_redeemed` | `account_id, market_id, outcome, winning_shares, losing_shares, payout, released_offers (count), released_collateral, released_shares` |
+| `offer_cancelled` | one per offer released by `redeem`, emitted just before `position_redeemed` |
+
+## New errors (substring match)
+
+| Message | When |
+| - | - |
+| `only the configured resolver can resolve the market` | `resolve_market` by anyone else |
+| `the market cannot be resolved before its cutoff` | `now < cutoff` |
+| `the market is already resolved; the result is final` | second resolution, same or different outcome |
+| `evidence must be 1 to 512 bytes` | empty, whitespace-only or too long |
+| `the market is not resolved yet` | `redeem` before resolution |
+| `the market is resolved: this action is no longer available` | split, merge, create/fill offer after resolution |
+| `nothing to redeem: no shares and no open offers` | repeat or empty `redeem` |
+
+## Frontend notes
+
+* Decide screens from `get_market().status`; show `resolution` (outcome, resolver, time, evidence) when `Resolved`.
+* On `Resolved`, show a **Redeem** button when `get_redemption_preview(me).redeemable`. Show `payout` and
+  `released_collateral` as separate lines; the new available balance is `available_collateral_after`.
+* After `redeem`, the user withdraws through the normal withdrawal flow (see "Displaying withdrawals" above).
+  A `Pending` withdrawal stays unresolved as before; redemption does not change that policy.
+* Unclaimed winnings stay with their owners indefinitely; there is no sweep.

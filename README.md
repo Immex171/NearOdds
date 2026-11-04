@@ -3,10 +3,12 @@
 A binary prediction market on NEAR using Polymarket-style complete-set
 economics: **one collateral token backs one YES share plus one NO share**.
 
-**Status: Milestones 1 and 2** — collateral deposits, YES/NO complete sets,
-merging, withdrawals, and fully funded onchain offers (create / partial fill /
-cancel / resale) on one fixed market with a test collateral token, zero fees.
-Market creation, resolution, redemption and the backend are **not implemented**
+**Status: Milestones 1 to 3** — collateral deposits, YES/NO complete sets,
+merging, withdrawals, fully funded onchain offers (create / partial fill /
+cancel / resale), and trusted-resolver YES/NO resolution with redemption into
+the internal balance, on one fixed market with a test collateral token and zero
+fees. **Trust model: manually resolved MVP** (one configured resolver; no VOID, no
+disputes, no 50/50 payout). Market creation and the backend are **not implemented**
 and not stubbed. The web app is being built separately in `apps/web`. See
 `NEAR Prediction Market Project Structure.md` for the full plan.
 
@@ -18,7 +20,7 @@ contracts/test-collateral/  TEST-ONLY six-decimal NEP-141 token fixture
 scripts/build-wasm.sh       builds the Wasm artifacts into target/wasm/
 docs/accounting.md          accounting model, pending withdrawals, surplus, callback failure
 docs/contract-interface.md  methods, units, attached deposits, events, trading interface
-docs/testnet.md             testnet deployment + smoke test (prerequisites, status)
+docs/testnet.md             testnet smoke test + persistent demo market (prerequisites, status)
 packages/types/             TypeScript shapes of the contract JSON
 docs/demo.md                reproducible demo and test index
 ```
@@ -45,6 +47,8 @@ callback fails. **Never deploy it.** Prerequisites and OpenSSL notes: `docs/demo
 3. `split_position` / `merge_positions` (1 yocto) move collateral ⇄ backing + shares.
 3b. `create_offer` / `fill_offer` / `cancel_offer` (1 yocto) trade existing shares for
    internal collateral, fully funded, fixed price, exact integer pricing.
+3c. After the cutoff the resolver calls `resolve_market` once; holders call `redeem`
+   (cancels their offers, burns shares, credits winners 1:1 to their internal balance).
 4. `withdraw` (1 yocto) debits, calls `ft_transfer`, and settles in a private
    callback from the real promise result (success finalizes; verified failure
    restores the current balance once).

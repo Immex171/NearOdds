@@ -14,6 +14,7 @@ use crate::types::*;
 
 pub const DEPOSIT_MSG: &str = "deposit";
 pub const DECIMALS: u8 = 6;
+pub const RESOLUTION_MODEL: &str = "manual-trusted-resolver: one configured account sets a final YES or NO after the cutoff; VOID and disputes are not supported";
 
 #[near]
 impl Contract {
@@ -21,6 +22,8 @@ impl Contract {
         ConfigView {
             schema_version: self.schema_version.max(SCHEMA_VERSION),
             collateral_token_id: self.collateral_token.clone(),
+            resolver_id: self.resolver.clone(),
+            resolution_model: RESOLUTION_MODEL.to_string(),
             market_id: self.market.id.clone(),
             deposit_msg: DEPOSIT_MSG.to_string(),
             decimals: DECIMALS,
@@ -45,9 +48,22 @@ impl Contract {
             question: self.market.question.clone(),
             rules: self.market.rules.clone(),
             split_cutoff_ns: U64(self.market.split_cutoff_ns),
-            split_open: env::block_timestamp() < self.market.split_cutoff_ns,
+            split_open: self.trading_open(env::block_timestamp()),
             trading_cutoff_ns: U64(self.market.split_cutoff_ns),
             trading_open: self.trading_open(env::block_timestamp()),
+            status: self.market_status(env::block_timestamp()),
+            awaiting_resolution: self.market_status(env::block_timestamp())
+                == MarketStatus::AwaitingResolution,
+            resolved: self.resolution.is_some(),
+            merge_open: self.resolution.is_none(),
+            resolver_id: self.resolver.clone(),
+            resolution_source: self.market.resolution_source.clone(),
+            resolution: self.resolution.as_ref().map(|r| ResolutionView {
+                outcome: r.outcome,
+                resolver_id: r.resolver.clone(),
+                resolved_at_ns: U64(r.resolved_at_ns),
+                evidence: r.evidence.clone(),
+            }),
             collateral_token_id: self.collateral_token.clone(),
             outstanding_yes: U128(self.totals.outstanding_yes),
             outstanding_no: U128(self.totals.outstanding_no),
@@ -186,6 +202,16 @@ impl Contract {
 }
 
 impl Contract {
+    pub(crate) fn market_status(&self, now_ns: u64) -> MarketStatus {
+        if self.resolution.is_some() {
+            MarketStatus::Resolved
+        } else if now_ns < self.market.split_cutoff_ns {
+            MarketStatus::Open
+        } else {
+            MarketStatus::AwaitingResolution
+        }
+    }
+
     pub(crate) fn offer_view(&self, o: &Offer, now_ns: u64) -> OfferView {
         let remaining = o.quantity - o.filled;
         let expired =

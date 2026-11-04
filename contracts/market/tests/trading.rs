@@ -8,22 +8,6 @@ use serde_json::{json, Value};
 const P60: u128 = 600_000;
 const P70: u128 = 700_000;
 
-/// Alice: 100 collateral deposited and split. Bob, Carol: 10 collateral each.
-async fn traders(opts: Opts) -> (Env, near_workspaces::Account) {
-    let e = setup(opts).await;
-    let carol = new_user(&e.root, "carol").await;
-    e.register_with_token(carol.id()).await;
-    e.register_with_market(&carol).await;
-    e.mint(e.alice.id(), 100 * ONE).await;
-    e.mint(e.bob.id(), 10 * ONE).await;
-    e.mint(carol.id(), 10 * ONE).await;
-    e.deposit(&e.alice, 100 * ONE).await;
-    ok(e.split(&e.alice, 100 * ONE).await);
-    e.deposit(&e.bob, 10 * ONE).await;
-    e.deposit(&carol, 10 * ONE).await;
-    (e, carol)
-}
-
 #[tokio::test]
 async fn acceptance_scenario_with_real_tokens() {
     let (e, carol) = traders(Opts::default()).await;
@@ -427,5 +411,5 @@ async fn views_paginate_offers_and_report_account_offers() {
     assert_eq!(cfg["trading"]["price_tick"], "10000");
     assert_eq!(cfg["trading"]["quantity_lot"], "100");
     assert_eq!(cfg["trading"]["fee_bps"], 0);
-    assert_eq!(cfg["schema_version"], 2);
+    assert_eq!(cfg["schema_version"], 3);
 }

@@ -180,12 +180,24 @@ impl Contract {
     /// they know about.
     pub(crate) fn assert_invariants(&self) {
         let t = &self.totals;
-        // Unresolved, split-and-merge-only milestone: one backing unit per
-        // YES share and per NO share. NOT a post-resolution invariant.
-        near_sdk::require!(
-            t.market_backing == t.outstanding_yes && t.market_backing == t.outstanding_no,
-            ERR_INVARIANT
-        );
+        match &self.resolution {
+            // Trading phase: one backing unit per YES share and per NO share.
+            None => near_sdk::require!(
+                t.market_backing == t.outstanding_yes && t.market_backing == t.outstanding_no,
+                ERR_INVARIANT
+            ),
+            // Resolved phase: supplies may differ as holders settle. Backing
+            // must equal the outstanding WINNING claims (1:1 conversion);
+            // losing shares carry no backing.
+            Some(r) => near_sdk::require!(
+                t.market_backing
+                    == match r.outcome {
+                        Outcome::Yes => t.outstanding_yes,
+                        Outcome::No => t.outstanding_no,
+                    },
+                ERR_INVARIANT
+            ),
+        }
         // Reserved shares are part of supply, never in addition to it.
         near_sdk::require!(
             t.reserved_yes <= t.outstanding_yes && t.reserved_no <= t.outstanding_no,
@@ -233,8 +245,9 @@ pub struct CancelOutcome {
 
 // ---- trading ledger (Milestone 2): offers are fully funded at creation ----
 impl Contract {
+    /// Open only before the cutoff and while unresolved.
     pub(crate) fn trading_open(&self, now_ns: u64) -> bool {
-        now_ns < self.market.split_cutoff_ns
+        self.resolution.is_none() && now_ns < self.market.split_cutoff_ns
     }
 
     fn find_offer(&self, id: u64) -> Res<Offer> {
@@ -256,6 +269,9 @@ impl Contract {
         expires_at_ns: u64,
         now_ns: u64,
     ) -> Res<Offer> {
+        if self.resolution.is_some() {
+            return Err(ERR_MARKET_RESOLVED);
+        }
         if !self.trading_open(now_ns) {
             return Err(ERR_TRADING_CLOSED);
         }
@@ -329,6 +345,9 @@ impl Contract {
         now_ns: u64,
     ) -> Res<FillOutcome> {
         let mut offer = self.find_offer(offer_id)?;
+        if self.resolution.is_some() {
+            return Err(ERR_MARKET_RESOLVED);
+        }
         if !self.trading_open(now_ns) {
             return Err(ERR_TRADING_CLOSED);
         }
@@ -448,5 +467,122 @@ impl Contract {
             released_collateral,
             released_shares,
         })
+    }
+}
+
+/// What `apply_redeem` did, for results and events.
+pub struct RedeemOutcome {
+    pub outcome: Outcome,
+    pub winning_shares: u128,
+    pub losing_shares: u128,
+    /// Winning-share payout only (== winning_shares, 1 share unit = 1 collateral unit).
+    pub payout: u128,
+    /// Every cancelled offer with what it released.
+    pub released: Vec<CancelOutcome>,
+    pub released_collateral: u128,
+    pub released_shares: u128,
+    pub available_after: u128,
+    pub yes_after: u128,
+    pub no_after: u128,
+}
+
+impl Contract {
+    /// Resolved-phase settlement for one account, atomically:
+    /// 1. cancel all the account's open offers (<= MAX_OPEN_OFFERS), releasing
+    ///    unused collateral (Buy) and unsold shares (Sell);
+    /// 2. consume ALL its YES and NO shares;
+    /// 3. credit the winning shares 1:1 as available collateral and reduce
+    ///    market backing by exactly that payout. Losing shares pay zero and
+    ///    release no backing.
+    ///
+    /// No external call. Errors with `ERR_NOTHING_TO_REDEEM` if the account has
+    /// neither shares nor offers, so a repeat redemption can never pay again.
+    pub(crate) fn apply_redeem(&mut self, id: &AccountId) -> Res<RedeemOutcome> {
+        let resolution = self.resolution.clone().ok_or(ERR_NOT_RESOLVED)?;
+        let mut acct = self.load_account(id)?;
+        let mut totals = self.totals.clone();
+
+        // 1. release offers
+        let mut released = Vec::with_capacity(acct.open_offers.len());
+        let (mut rel_col, mut rel_shares) = (0u128, 0u128);
+        let ids = std::mem::take(&mut acct.open_offers);
+        for oid in ids {
+            let offer = self.find_offer(oid)?;
+            if &offer.owner != id {
+                return Err(ERR_INVARIANT);
+            }
+            let remaining = sub(offer.quantity, offer.filled, ERR_UNDERFLOW)?;
+            let (mut c, mut sh) = (0, 0);
+            match offer.side {
+                Side::Sell => {
+                    let res = reserved_mut(&mut acct, offer.outcome);
+                    *res = sub(*res, remaining, ERR_INSUFFICIENT_RESERVE)?;
+                    let avail = avail_mut(&mut acct, offer.outcome);
+                    *avail = add(*avail, remaining)?;
+                    let t = total_reserved_mut(&mut totals, offer.outcome);
+                    *t = sub(*t, remaining, ERR_INSUFFICIENT_RESERVE)?;
+                    sh = remaining;
+                }
+                Side::Buy => {
+                    let rc = offer_cost(remaining, offer.price)?;
+                    acct.reserved_collateral =
+                        sub(acct.reserved_collateral, rc, ERR_INSUFFICIENT_RESERVE)?;
+                    acct.available = add(acct.available, rc)?;
+                    totals.reserved_collateral =
+                        sub(totals.reserved_collateral, rc, ERR_INSUFFICIENT_RESERVE)?;
+                    totals.available_collateral = add(totals.available_collateral, rc)?;
+                    c = rc;
+                }
+            }
+            totals.open_offers = totals.open_offers.saturating_sub(1);
+            rel_col = add(rel_col, c)?;
+            rel_shares = add(rel_shares, sh)?;
+            released.push(CancelOutcome {
+                offer,
+                released_collateral: c,
+                released_shares: sh,
+            });
+        }
+
+        // 2./3. settle positions
+        let (winning, losing) = match resolution.outcome {
+            Outcome::Yes => (acct.yes, acct.no),
+            Outcome::No => (acct.no, acct.yes),
+        };
+        if released.is_empty() && winning == 0 && losing == 0 {
+            return Err(ERR_NOTHING_TO_REDEEM);
+        }
+        acct.yes = 0;
+        acct.no = 0;
+        let (out_win, out_lose) = match resolution.outcome {
+            Outcome::Yes => (&mut totals.outstanding_yes, &mut totals.outstanding_no),
+            Outcome::No => (&mut totals.outstanding_no, &mut totals.outstanding_yes),
+        };
+        *out_win = sub(*out_win, winning, ERR_UNDERFLOW)?;
+        *out_lose = sub(*out_lose, losing, ERR_UNDERFLOW)?;
+        let payout = winning;
+        totals.market_backing = sub(totals.market_backing, payout, ERR_UNDERFLOW)?;
+        acct.available = add(acct.available, payout)?;
+        totals.available_collateral = add(totals.available_collateral, payout)?;
+
+        let outcome = RedeemOutcome {
+            outcome: resolution.outcome,
+            winning_shares: winning,
+            losing_shares: losing,
+            payout,
+            released_collateral: rel_col,
+            released_shares: rel_shares,
+            available_after: acct.available,
+            yes_after: acct.yes,
+            no_after: acct.no,
+            released,
+        };
+        self.store_account(id, acct);
+        for r in &outcome.released {
+            self.offers[bucket_of_id(r.offer.id)].remove(&r.offer.id);
+        }
+        self.totals = totals;
+        self.assert_invariants();
+        Ok(outcome)
     }
 }

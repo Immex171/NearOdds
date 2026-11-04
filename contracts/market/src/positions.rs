@@ -26,6 +26,7 @@ impl Contract {
     pub fn split_position(&mut self, market_id: String, amount: U128) {
         assert_one_yocto();
         self.require_market(&market_id);
+        require!(self.resolution.is_none(), ERR_MARKET_RESOLVED);
         require!(
             env::block_timestamp() < self.market.split_cutoff_ns,
             ERR_SPLIT_CLOSED
@@ -42,12 +43,14 @@ impl Contract {
     }
 
     /// Burns `amount` YES and `amount` NO base units from the caller and
-    /// credits `amount` collateral. Allowed before and after the cutoff.
+    /// credits `amount` collateral. Allowed before and after the cutoff, but
+    /// NOT after the market is resolved (use `redeem` instead).
     /// Requires exactly 1 yoctoNEAR attached.
     #[payable]
     pub fn merge_positions(&mut self, market_id: String, amount: U128) {
         assert_one_yocto();
         self.require_market(&market_id);
+        require!(self.resolution.is_none(), ERR_MARKET_RESOLVED);
         let account_id = env::predecessor_account_id();
         self.apply_merge(&account_id, amount.0)
             .unwrap_or_else(|e| env::panic_str(e));

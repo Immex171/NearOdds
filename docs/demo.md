@@ -24,7 +24,7 @@ test-token Wasm, moving real tokens. No testnet account is needed.
 | Do | See |
 | - | - |
 | `bash scripts/build-wasm.sh` | `target/wasm/{market,market_failure_injection,test_collateral}.wasm` listed |
-| `cargo test -p nearodds-market --lib` | `78 passed` (47 Milestone 1 + 31 trading) |
+| `cargo test -p nearodds-market --lib` | `99 passed` (47 Milestone 1 + 31 trading + 21 resolution) |
 | `cargo test --workspace` | 78 unit + 33 Sandbox tests pass, 1 ignored (the testnet smoke test) |
 | `cargo test -p nearodds-market --test collateral_flow -- acceptance_scenario_and_complete_exit --nocapture` | `1 passed` |
 
@@ -113,3 +113,30 @@ then merges and withdraws everyone and checks the token balances (Alice 94.8, Bo
 | Same flow on testnet | `scripts/testnet-smoke.sh` (see `docs/testnet.md`; not run) |
 
 Unit tests for the same rules (including per-fill exactness and expiry) are in `contracts/market/src/tests/trading.rs`.
+
+## Milestone 3: resolution and redemption demo
+
+`cargo test -p nearodds-market --test resolution -- yes_wins_full_lifecycle_with_real_tokens --nocapture` runs the
+Alice/Bob/Carol scenario with real tokens through resolution:
+
+| Step | Result |
+| - | - |
+| Trades as in Milestone 2 | Alice 7.80/87 YES/100 NO, Bob 7.30/5/0, Carol 4.90/8/0 |
+| Resolver tries early | `cannot be resolved before its cutoff` |
+| Non-resolver tries after the cutoff | `only the configured resolver` |
+| Resolver resolves YES; a second resolution (any outcome) | success; `already resolved` |
+| Split, merge, create/fill offer | `market is resolved` |
+| Carol, Alice, Bob redeem | 12.90, 94.80, 12.30 available; backing 0; total 120 |
+| Redeem again | `nothing to redeem` |
+| Everyone withdraws | token balances 94.8 / 12.3 / 12.9, market holds 0 |
+
+`no_wins_full_lifecycle_with_real_tokens` gives 107.80 / 7.30 / 4.90.
+
+| Scenario | Test |
+| - | - |
+| Offers outstanding at resolution; redeem releases them (payout vs released collateral) | `offers_outstanding_at_resolution_are_cancellable_and_redeem_releases_them` |
+| All ten offer slots occupied; gas measurement (6.9 Tgas burned; 2.1 with none) | `redeem_with_all_ten_offer_slots_measures_gas` |
+| Preview, unregistered, empty account, mixed position, max-evidence storage (547 bytes) | `views_and_redeem_edge_cases` |
+| Testnet-ready lifecycle harness (Sandbox run) | `smoke_on_sandbox`; demo market: `demo_on_sandbox` |
+
+Unit tests for the same rules, including the exact cutoff boundary, are in `contracts/market/src/tests/resolution.rs`.

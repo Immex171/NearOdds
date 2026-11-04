@@ -10,6 +10,10 @@ use crate::state::{Outcome, SettlementOutcome, Side};
 pub struct ConfigView {
     pub schema_version: u32,
     pub collateral_token_id: AccountId,
+    /// Trusted account that can resolve the market (manually resolved MVP).
+    pub resolver_id: AccountId,
+    /// Plain-language trust model, constant.
+    pub resolution_model: String,
     pub market_id: String,
     /// The only accepted `ft_transfer_call` msg.
     pub deposit_msg: String,
@@ -46,11 +50,80 @@ pub struct MarketView {
     pub split_open: bool,
     /// Same cutoff as splitting: offers can be created/filled before it.
     pub trading_cutoff_ns: U64,
+    /// `!resolved && block_timestamp < cutoff`.
     pub trading_open: bool,
+    /// `Open` | `AwaitingResolution` | `Resolved`.
+    pub status: MarketStatus,
+    /// Cutoff passed and no result yet: the resolver may act.
+    pub awaiting_resolution: bool,
+    pub resolved: bool,
+    /// Merging is allowed until resolution (including after the cutoff).
+    pub merge_open: bool,
+    pub resolver_id: AccountId,
+    /// Where the resolver will check the outcome; fixed at creation.
+    pub resolution_source: String,
+    /// `Some` once resolved, else `null`.
+    pub resolution: Option<ResolutionView>,
     pub collateral_token_id: AccountId,
     pub outstanding_yes: U128,
     pub outstanding_no: U128,
     pub market_backing: U128,
+}
+
+#[near(serializers=[json])]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarketStatus {
+    Open,
+    AwaitingResolution,
+    Resolved,
+}
+
+#[near(serializers=[json])]
+pub struct ResolutionView {
+    /// Final outcome: `"Yes"` or `"No"`. One winning share pays exactly 1 collateral base unit per share base unit.
+    pub outcome: Outcome,
+    pub resolver_id: AccountId,
+    pub resolved_at_ns: U64,
+    pub evidence: String,
+}
+
+/// What `redeem` would do for an account right now. `payout` never includes
+/// collateral released from the account's buy offers.
+#[near(serializers=[json])]
+pub struct RedemptionPreview {
+    pub resolved: bool,
+    pub outcome: Option<Outcome>,
+    /// False when unresolved, unregistered or nothing remains (no shares, no offers).
+    pub redeemable: bool,
+    /// Open offers that `redeem` would cancel first (at most 10).
+    pub offers_to_release: Vec<OfferView>,
+    /// Collateral from unfilled buy offers (returned to available; NOT payout).
+    pub released_collateral: U128,
+    /// Shares from unfilled sell offers (returned to share balances, then settled).
+    pub released_shares: U128,
+    /// All winning shares after releasing offers (available + reserved).
+    pub winning_shares: U128,
+    pub losing_shares: U128,
+    /// Collateral credited for winning shares (= winning_shares).
+    pub payout: U128,
+    /// Available collateral after `redeem`: available + released_collateral + payout.
+    pub available_collateral_after: U128,
+}
+
+#[near(serializers=[json])]
+pub struct RedeemResult {
+    pub outcome: Outcome,
+    pub winning_shares: U128,
+    pub losing_shares: U128,
+    /// Winning-share payout only.
+    pub payout: U128,
+    pub released_offers: Vec<CancelResult>,
+    pub released_collateral: U128,
+    pub released_shares: U128,
+    /// Account state after settlement (shares are zero).
+    pub available_collateral: U128,
+    pub yes: U128,
+    pub no: U128,
 }
 
 #[near(serializers=[json])]

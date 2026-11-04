@@ -52,6 +52,7 @@ pub struct Env {
     pub root: Account,
     pub token: Contract,
     pub market: Contract,
+    pub resolver: Account,
     pub alice: Account,
     pub bob: Account,
     pub cutoff_ns: u64,
@@ -122,6 +123,8 @@ pub async fn setup(opts: Opts) -> Env {
         .await
         .unwrap());
 
+    let resolver = new_user(&root, "resolver").await;
+
     // Market: deploy + init in ONE batch transaction (no front-running window).
     let market_acct = root
         .create_subaccount("market")
@@ -147,7 +150,9 @@ pub async fn setup(opts: Opts) -> Env {
                     "market_id": MID,
                     "question": "Will it rain in Lagos on 2026-12-01?",
                     "rules": "Resolves YES if the NiMet daily report records measurable rain.",
+                    "resolution_source": "NiMet daily report for Lagos, 2026-12-01",
                     "split_cutoff_ns": cutoff_ns.to_string(),
+                    "resolver_id": resolver.id(),
                 }))
                 .gas(Gas::from_tgas(100)),
         )
@@ -168,6 +173,7 @@ pub async fn setup(opts: Opts) -> Env {
         root,
         token,
         market,
+        resolver,
         alice,
         bob,
         cutoff_ns,
@@ -421,6 +427,43 @@ impl Env {
         ]
     }
 
+    pub async fn resolve(&self, who: &Account, outcome: &str) -> ExecutionFinalResult {
+        self.call_market(
+            who,
+            "resolve_market",
+            json!({
+                "market_id": MID, "outcome": outcome,
+                "evidence": "https://nimet.example/report/2026-12-01"
+            }),
+        )
+        .await
+    }
+
+    pub async fn redeem(&self, who: &Account) -> ExecutionFinalResult {
+        self.call_market(who, "redeem", json!({ "market_id": MID }))
+            .await
+    }
+
+    pub async fn market_view(&self) -> Value {
+        self.market
+            .view("get_market")
+            .args_json(json!({ "market_id": MID }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
+    pub async fn preview(&self, id: &near_workspaces::AccountId) -> Value {
+        self.market
+            .view("get_redemption_preview")
+            .args_json(json!({ "account_id": id }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
     pub async fn withdrawal(&self, id: &near_workspaces::AccountId) -> Value {
         self.market
             .view("get_withdrawal")
@@ -451,4 +494,33 @@ impl Env {
         }
         panic!("chain clock never passed {ts_ns}");
     }
+}
+
+/// Alice: 100 collateral deposited and split. Bob, Carol: 10 collateral each.
+pub async fn traders(opts: Opts) -> (Env, Account) {
+    let e = setup(opts).await;
+    let carol = new_user(&e.root, "carol").await;
+    e.register_with_token(carol.id()).await;
+    e.register_with_market(&carol).await;
+    e.mint(e.alice.id(), 100 * ONE).await;
+    e.mint(e.bob.id(), 10 * ONE).await;
+    e.mint(carol.id(), 10 * ONE).await;
+    e.deposit(&e.alice, 100 * ONE).await;
+    ok(e.split(&e.alice, 100 * ONE).await);
+    e.deposit(&e.bob, 10 * ONE).await;
+    e.deposit(&carol, 10 * ONE).await;
+    (e, carol)
+}
+
+/// The Milestone 2 trades (zero fees). Leaves Alice 7.80/87/100, Bob 7.30/5/0,
+/// Carol 4.90/8/0.
+pub async fn trade_acceptance(e: &Env, carol: &Account) {
+    let id = e
+        .new_offer(&e.alice, "Yes", "Sell", 600_000, 20 * ONE)
+        .await;
+    ok(e.fill_offer(&e.bob, &id, 8 * ONE).await);
+    ok(e.fill_offer(carol, &id, 5 * ONE).await);
+    ok(e.cancel_offer(&e.alice, &id).await);
+    let id2 = e.new_offer(&e.bob, "Yes", "Sell", 700_000, 3 * ONE).await;
+    ok(e.fill_offer(carol, &id2, 3 * ONE).await);
 }

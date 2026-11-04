@@ -5,11 +5,11 @@ use crate::state::{Outcome, Side};
 use crate::types::{FillStatus, OfferStatus};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-const P60: u128 = 600_000;
-const P70: u128 = 700_000;
+pub(super) const P60: u128 = 600_000;
+pub(super) const P70: u128 = 700_000;
 const EXPIRY_NONE: Option<U64> = None;
 
-fn offer(
+pub(super) fn offer(
     c: &mut Contract,
     who: &str,
     o: Outcome,
@@ -21,18 +21,18 @@ fn offer(
     c.create_offer(MID.into(), o, s, U128(price), U128(qty), EXPIRY_NONE)
 }
 
-fn fill(c: &mut Contract, who: &str, id: u64, qty: u128) -> crate::types::FillResult {
+pub(super) fn fill(c: &mut Contract, who: &str, id: u64, qty: u128) -> crate::types::FillResult {
     set(who, 1, 11);
     c.fill_offer(U64(id), U128(qty))
 }
 
-fn cancel(c: &mut Contract, who: &str, id: u64) -> crate::types::CancelResult {
+pub(super) fn cancel(c: &mut Contract, who: &str, id: u64) -> crate::types::CancelResult {
     set(who, 1, 12);
     c.cancel_offer(U64(id))
 }
 
 /// Runs `f` and asserts it panics with a message containing `needle`.
-fn fails<F: FnOnce()>(f: F, needle: &str) {
+pub(super) fn fails<F: FnOnce()>(f: F, needle: &str) {
     let e = catch_unwind(AssertUnwindSafe(f)).expect_err("expected a panic");
     let msg = if let Some(s) = e.downcast_ref::<String>() {
         s.clone()
@@ -47,15 +47,15 @@ fn fails<F: FnOnce()>(f: F, needle: &str) {
     );
 }
 
-struct Bal {
-    avail: u128,
-    rcol: u128,
-    yes: u128,
-    ryes: u128,
-    no: u128,
-    rno: u128,
+pub(super) struct Bal {
+    pub(super) avail: u128,
+    pub(super) rcol: u128,
+    pub(super) yes: u128,
+    pub(super) ryes: u128,
+    pub(super) no: u128,
+    pub(super) rno: u128,
 }
-fn bal(c: &Contract, who: &str) -> Bal {
+pub(super) fn bal(c: &Contract, who: &str) -> Bal {
     let a = c.get_account(acct(who)).unwrap();
     Bal {
         avail: a.available_collateral.0,
@@ -67,7 +67,7 @@ fn bal(c: &Contract, who: &str) -> Bal {
     }
 }
 
-fn nothing_reserved(c: &Contract) {
+pub(super) fn nothing_reserved(c: &Contract) {
     let t = c.get_totals();
     assert_eq!(t.reserved_collateral.0, 0);
     assert_eq!(t.reserved_yes.0, 0);
@@ -76,7 +76,7 @@ fn nothing_reserved(c: &Contract) {
 }
 
 /// Alice has 100 YES + 100 NO; Bob and Carol 10 collateral each.
-fn market_with_traders() -> Contract {
+pub(super) fn market_with_traders() -> Contract {
     let mut c = new_contract();
     fund(&mut c, "alice.test", 100 * ONE);
     split(&mut c, "alice.test", 100 * ONE);

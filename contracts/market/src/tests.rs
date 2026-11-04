@@ -13,6 +13,7 @@ use crate::state::{Contract, SettlementOutcome};
 use crate::storage::storage_cost;
 use crate::types::WithdrawalStatus;
 
+mod resolution;
 mod trading;
 
 const ONE: u128 = 1_000_000;
@@ -45,13 +46,20 @@ fn set(pred: &str, yocto: u128, ts: u64) {
 }
 
 fn new_contract() -> Contract {
+    // The mock chain keeps storage across `testing_env!`; start every contract
+    // instance from empty storage so tests that build several do not leak state.
+    near_sdk::mock::with_mocked_blockchain(|b| {
+        let _ = b.take_storage();
+    });
     set("owner.test", 0, 1);
     Contract::new(
         token(),
         MID.to_string(),
         "Will it rain?".to_string(),
         "Resolves YES if it rains.".to_string(),
+        "NiMet daily report".to_string(),
         U64(CUTOFF),
+        acct("resolver.test"),
     )
 }
 
@@ -105,7 +113,15 @@ fn init_sets_immutable_terms() {
 #[should_panic(expected = "invalid initialization arguments")]
 fn init_rejects_past_cutoff() {
     set("owner.test", 0, 500);
-    Contract::new(token(), MID.into(), "q".into(), "r".into(), U64(400));
+    Contract::new(
+        token(),
+        MID.into(),
+        "q".into(),
+        "r".into(),
+        "src".into(),
+        U64(400),
+        acct("resolver.test"),
+    );
 }
 
 #[test]

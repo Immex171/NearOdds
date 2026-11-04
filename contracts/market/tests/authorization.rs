@@ -17,6 +17,8 @@ async fn init_cannot_run_twice() {
             "market_id": "evil",
             "question": "q",
             "rules": "r",
+            "resolution_source": "s",
+            "resolver_id": e.alice.id(),
             "split_cutoff_ns": "99999999999999999999"
         }))
         .transact()
@@ -60,8 +62,12 @@ async fn no_admin_or_future_feature_methods_exist() {
         "sweep",
         "take_offer",
         "list_orders",
-        "resolve_market",
-        "redeem",
+        "sweep_unclaimed",
+        "set_resolver",
+        "set_outcome",
+        "void_market",
+        "dispute",
+        "resolve",
         "create_market",
         "refund",
         "storage_unregister",
@@ -91,7 +97,7 @@ async fn views_report_configuration() {
     let cfg: serde_json::Value = e.market.view("get_config").await.unwrap().json().unwrap();
     assert_eq!(cfg["decimals"], 6);
     assert_eq!(cfg["deposit_msg"], "deposit");
-    assert_eq!(cfg["schema_version"], 2);
+    assert_eq!(cfg["schema_version"], 3);
     let m: serde_json::Value = e
         .market
         .view("get_market")

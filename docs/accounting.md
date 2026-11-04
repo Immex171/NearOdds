@@ -1,8 +1,8 @@
-# NearOdds accounting model (Milestones 1 and 2)
+# NearOdds accounting model (Milestones 1 to 3)
 
 Scope: one fixed binary market, one approved NEP-141 collateral token, deposit,
 split, merge, withdraw (Milestone 1) and fully funded onchain offers (Milestone 2,
-see the Trading section). Resolution and redemption do not exist yet.
+see the Trading section). Milestone 3 adds trusted-resolver resolution and redemption (Resolved phase section).
 
 ## Units
 
@@ -176,3 +176,55 @@ earlier fills). Fills and creation stop at the cutoff, which is the same instant
 Withdrawal still debits **available** collateral only, so reserved collateral cannot be withdrawn. The
 callback policy is unchanged: a verified token failure restores the current available balance once; a
 callback that itself fails leaves the withdrawal `Pending` with no automatic resend or restoration.
+
+## Resolved phase (Milestone 3)
+
+Two phases have different invariants. The contract checks the right one after every operation.
+
+| Phase | Invariant (all in share/collateral base units) |
+| - | - |
+| Trading (unresolved) | `market_backing == outstanding_yes == outstanding_no` |
+| Resolved | `market_backing == outstanding_<winning outcome>`; the losing supply carries no backing and may be anything |
+| Always | `reserved_yes <= outstanding_yes`, `reserved_no <= outstanding_no`; total books `available + reserved collateral + backing` only changes by deposits and withdrawals |
+
+Resolution itself changes no balance: it records `{outcome, resolver, resolved_at, evidence}` once. Invariants
+hold at that instant because supplies are still equal and the winning supply equals the backing.
+
+### Redemption accounting
+
+For one account (offers released first, all within one receipt, at most ten):
+
+| Step | Effect |
+| - | - |
+| Cancel Buy offer | reserved collateral `-r`, available `+r` (`r = remaining*price/1e6`); backing unchanged |
+| Cancel Sell offer | reserved shares `-q`, available shares `+q`; supply and backing unchanged |
+| Burn winning shares `w` | `outstanding_win -= w`; available collateral `+w`; `market_backing -= w` |
+| Burn losing shares `l` | `outstanding_lose -= l`; **no** collateral and **no** backing change |
+
+Consequences, all covered by tests: a winning share releases exactly the backing that was locked for it; losing
+shares release nothing; once every winning share is redeemed `market_backing == 0`; redeeming cannot touch
+another account's balance; a repeat redemption has nothing to burn and errors; released offer collateral and the
+payout are different credits and each is applied once. Redemption never transfers tokens: tokens leave only
+through `withdraw`, whose pending/callback policy is unchanged (an unsettled withdrawal stays `Pending`; a verified
+failure restores the current available balance exactly once).
+
+With the standard scenario (Alice 87 YES + 100 NO and 7.80, Bob 5 YES and 7.30, Carol 8 YES and 4.90; total 120):
+YES wins gives 94.80 / 12.30 / 12.90 and NO wins gives 107.80 / 7.30 / 4.90, each summing to 120 with backing 0.
+
+### Unclaimed collateral
+
+Winners who never redeem keep their claim: their shares and the matching backing stay in the contract. There is no
+administrator sweep and no expiry.
+
+### Storage
+
+Per-account storage is unchanged by Milestone 3 (the 4,096-byte prepaid bound still covers an account, a pending
+withdrawal and ten open offers; measured 2,619 bytes). Resolution adds one global record (measured 74 bytes with a
+short and 547 bytes with a maximum 512-byte evidence string) paid from the market account's own balance.
+
+### Trust and limits
+
+The resolver is trusted: it can set either outcome and the contract cannot check the evidence. There is no VOID,
+dispute, challenge window or timeout fallback; if the resolver never acts, positions stay locked in their shares
+(merge before resolution and cancel remain available until then; after resolution only `redeem`). Fractional
+settlement would need its own rounding policy and is deliberately not offered.

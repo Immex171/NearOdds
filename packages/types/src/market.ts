@@ -1,5 +1,5 @@
 /**
- * JSON shapes of the NearOdds market contract (schema version 2).
+ * JSON shapes of the NearOdds market contract (schema version 3).
  * All amounts are DECIMAL STRINGS in base units (6 decimals): parse with BigInt,
  * never Number. Timestamps are NEAR block time in nanoseconds (decimal string).
  * Source of truth: docs/contract-interface.md.
@@ -24,8 +24,12 @@ export interface TradingParams {
 }
 
 export interface ConfigView {
-  schema_version: number; // 2
+  schema_version: number; // 3
   collateral_token_id: AccountId;
+  /** The ONLY account that can resolve the market (trusted, manual MVP). */
+  resolver_id: AccountId;
+  /** Plain-language trust statement (constant). */
+  resolution_model: string;
   market_id: string;
   deposit_msg: string; // "deposit"
   decimals: number; // 6
@@ -33,14 +37,32 @@ export interface ConfigView {
   trading: TradingParams;
 }
 
+/** Open -> AwaitingResolution (at the cutoff) -> Resolved. */
+export type MarketStatus = "Open" | "AwaitingResolution" | "Resolved";
+
+export interface ResolutionView {
+  outcome: Outcome; // "Yes" | "No" (no VOID)
+  resolver_id: AccountId;
+  resolved_at_ns: U64;
+  evidence: string; // 1..512 bytes, recorded not verified
+}
+
 export interface MarketView {
   market_id: string;
   question: string;
   rules: string;
+  /** Where the resolver checks the outcome; fixed at creation. */
+  resolution_source: string;
   split_cutoff_ns: U64;
   split_open: boolean;
   trading_cutoff_ns: U64; // same instant as split_cutoff_ns
-  trading_open: boolean;
+  trading_open: boolean; // false once resolved
+  status: MarketStatus;
+  awaiting_resolution: boolean; // cutoff passed, no result yet
+  resolved: boolean;
+  merge_open: boolean; // true until resolved (even after the cutoff)
+  resolver_id: AccountId;
+  resolution: ResolutionView | null;
   collateral_token_id: AccountId;
   outstanding_yes: U128; // includes reserved shares
   outstanding_no: U128;
@@ -97,6 +119,7 @@ export interface TotalsView {
 /** Views only ever return these; filled and cancelled offers are removed. */
 export type OfferStatus = "Open" | "PartiallyFilled" | "Expired";
 
+/** `get_offer` returns null for "no active offer record" (never existed, filled, cancelled or released by redeem). */
 export interface OfferView {
   offer_id: U64; // opaque
   market_id: string;
@@ -113,6 +136,43 @@ export interface OfferView {
   created_at_ns: U64;
   status: OfferStatus;
   fillable: boolean;
+}
+
+/** What `redeem` would do now. `payout` never includes released offer collateral. */
+export interface RedemptionPreview {
+  resolved: boolean;
+  outcome: Outcome | null;
+  redeemable: boolean; // resolved AND (shares or offers remain)
+  offers_to_release: OfferView[]; // at most 10
+  released_collateral: U128; // from Buy offers; NOT payout
+  released_shares: U128; // YES+NO from Sell offers (settled in the same call)
+  winning_shares: U128; // incl. shares reserved by Sell offers
+  losing_shares: U128;
+  payout: U128; // == winning_shares (1 share unit = 1 collateral unit)
+  available_collateral_after: U128; // available + released_collateral + payout
+}
+
+export interface RedeemResult {
+  outcome: Outcome;
+  winning_shares: U128;
+  losing_shares: U128;
+  payout: U128; // winning payout only
+  released_offers: CancelResult[];
+  released_collateral: U128;
+  released_shares: U128;
+  available_collateral: U128; // balance after settlement
+  yes: U128; // "0"
+  no: U128; // "0"
+}
+
+export interface ResolveMarketArgs {
+  market_id: string;
+  outcome: Outcome;
+  evidence: string; // 1..512 bytes
+}
+
+export interface RedeemArgs {
+  market_id: string;
 }
 
 export type FillStatus = "PartiallyFilled" | "Filled";
@@ -163,6 +223,8 @@ export type MarketEvent =
   | { event: "offer_created"; data: { offer_id: U64; owner_id: AccountId; market_id: string; outcome: Outcome; side: Side; price: U128; quantity: U128; expires_at_ns: U64 | null; reserved_collateral: U128; reserved_shares: U128 } }
   | { event: "offer_filled"; data: { offer_id: U64; maker_id: AccountId; taker_id: AccountId; market_id: string; outcome: Outcome; maker_side: Side; price: U128; quantity: U128; collateral_amount: U128; remaining_quantity: U128 } }
   | { event: "offer_cancelled"; data: { offer_id: U64; owner_id: AccountId; market_id: string; outcome: Outcome; side: Side; remaining_quantity: U128; released_collateral: U128; released_shares: U128 } }
+  | { event: "market_resolved"; data: { market_id: string; outcome: Outcome; resolver_id: AccountId; resolved_at_ns: U64; evidence: string } }
+  | { event: "position_redeemed"; data: { account_id: AccountId; market_id: string; outcome: Outcome; winning_shares: U128; losing_shares: U128; payout: U128; released_offers: number; released_collateral: U128; released_shares: U128 } }
   | { event: "deposit"; data: { account_id: AccountId; token_id: AccountId; amount: U128 } }
   | { event: "split" | "merge"; data: { account_id: AccountId; market_id: string; amount: U128 } }
   | { event: "withdrawal_requested"; data: { account_id: AccountId; withdrawal_id: U64; receiver_id: AccountId; amount: U128 } }

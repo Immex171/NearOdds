@@ -53,6 +53,8 @@ export interface Offer {
   createdAt: number;
   /** Absent/true = fillable now; false = expired or trading closed (still cancellable). */
   fillable?: boolean;
+  /** Unix ms; null/absent = no expiry (the market cutoff still applies). */
+  expiresAt?: number | null;
 }
 
 export interface OpenOffer extends Offer {
@@ -120,6 +122,8 @@ export interface CreateOfferRequest {
   price: bigint;
   /** Share base units (multiple of the lot). */
   qty: bigint;
+  /** Optional expiry, unix ms in the future (contract `expires_at_ns`). */
+  expiresAt?: number;
 }
 
 export interface Fill { offerId: string; price: bigint; qty: bigint }

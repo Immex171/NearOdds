@@ -57,3 +57,11 @@ export function nearStr(yocto: bigint): string {
 export function dateTimeUtc(ts: number): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(ts) + " UTC";
 }
+
+/** Compact label for a market, e.g. "Will NEAR close above $10 on December 31, 2026?" -> "NEAR above $10". */
+export function shortTitle(q: string): string {
+  let t = q.replace(/^Will (the )?/i, "").replace(/\?$/, "");
+  t = t.split(/ (?:on|by|before|after|in|at|this|next|when|for) /i)[0];
+  t = t.replace(/ (?:close|trade|be) (above|below|at)/i, " $1");
+  return t.length > 34 ? `${t.slice(0, 33)}…` : t;
+}

@@ -210,7 +210,7 @@ export class DemoAdapter implements DataAdapter {
   }
 
   createOffer(req: CreateOfferRequest, r: TxReporter) {
-    const { marketId, outcome, side, qty, price } = req;
+    const { marketId, outcome, side, qty, price, expiresAt } = req;
     return this.run(r, () => {
       const m = this.market(marketId);
       if (m.status !== "open") throw new Error("Market closed");
@@ -226,7 +226,8 @@ export class DemoAdapter implements DataAdapter {
         if (p.qty < qty) throw new Error("Insufficient shares");
         p.qty -= qty; this.prune();
       }
-      this.s.mine.push({ id: `mine-${this.s.seq++}`, marketId, outcome, side, price, qty, owner: DEMO_ACCOUNT, createdAt: DEMO_NOW + this.s.seq * 60_000, status: "open" });
+      if (expiresAt != null && expiresAt <= DEMO_NOW) throw new Error("Expiry must be in the future");
+      this.s.mine.push({ id: `mine-${this.s.seq++}`, marketId, outcome, side, price, qty, owner: DEMO_ACCOUNT, createdAt: DEMO_NOW + this.s.seq * 60_000, status: "open", expiresAt: expiresAt ?? null });
       this.note(`Placed limit ${side} ${Number(qty) / 1e6} ${outcome} at ${Number(price) / 1e6} (demo)`, marketId, "offer");
     }, "Demo limit offer placed");
   }

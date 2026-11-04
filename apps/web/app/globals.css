@@ -29,3 +29,5 @@ button:disabled { cursor: not-allowed; }
 @keyframes sk { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } * { transition: none !important; } }
 input[type="number"]::-webkit-inner-spin-button { appearance: none; }
+/* Inputs inside a labelled field row: the row shows the focus ring instead. */
+.bare:focus-visible { outline: none; border-radius: 0; }

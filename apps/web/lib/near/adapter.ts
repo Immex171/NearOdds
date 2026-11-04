@@ -37,7 +37,7 @@ const toMs = (ns: string) => Number(BigInt(ns) / 1_000_000n);
 function toOffer(o: OfferView): Offer {
   return {
     id: o.offer_id, marketId: o.market_id, outcome: uiOutcome(o.outcome), side: o.side === "Buy" ? "buy" : "sell",
-    price: BigInt(o.price), qty: BigInt(o.remaining_quantity), owner: o.owner_id, createdAt: toMs(o.created_at_ns), fillable: o.fillable,
+    price: BigInt(o.price), qty: BigInt(o.remaining_quantity), owner: o.owner_id, createdAt: toMs(o.created_at_ns), fillable: o.fillable, expiresAt: o.expires_at_ns ? toMs(o.expires_at_ns) : null,
   };
 }
 
@@ -156,6 +156,7 @@ export class NearAdapter implements DataAdapter {
     return this.send(r, M(), "create_offer", {
       market_id: q.marketId, outcome: contractOutcome(q.outcome), side: q.side === "buy" ? "Buy" : "Sell",
       price: q.price.toString(), quantity: q.qty.toString(),
+      ...(q.expiresAt ? { expires_at_ns: (BigInt(q.expiresAt) * 1_000_000n).toString() } : {}),
     }, YOCTO, TGAS(100), "Limit offer created");
   }
   fillOffer(offerId: string, qty: bigint, r: TxReporter) {

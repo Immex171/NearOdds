@@ -20,7 +20,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AppProvider>
           <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100] focus:rounded-lg focus:bg-brand focus:px-3 focus:py-2">Skip to content</a>
           <AppHeader />
-          <main id="main" className="mx-auto w-full max-w-[1320px] px-4 pb-24 pt-5 md:px-6">{children}</main>
+          <main id="main" className="mx-auto w-full max-w-[1320px] px-4 pb-24 pt-5 md:px-6 lg:pb-8">{children}</main>
           <Overlays />
         </AppProvider>
       </body>

@@ -62,8 +62,12 @@ export class NearAdapter implements DataAdapter {
       status: STATUS[mv.status], createdAt: closesAt, closesAt,
       volume: 0n, lastYes: null, prevYes: null, hasHistory: false, trendScore: 0,
       resolution: {
-        yesWins: mv.rules, noWins: "Resolves NO in every other case under the rules text. VOID and disputes are not supported.",
-        source: mv.resolution_source || "Not provided", resolver: `${mv.resolver_id} (trusted resolver)`,
+        // Canonical contract configuration, shown as published. Not rewritten by the frontend.
+        yesWins: mv.rules, noWins: "",
+        source: { name: mv.resolution_source || "Not provided", field: "As described in the rules text" },
+        observation: { at: null, text: "As defined in the rules text" },
+        ifMissing: "Only the trusted resolver can resolve the market, once, after the cutoff. VOID and disputes are not supported.",
+        resolver: `${mv.resolver_id} (trusted resolver)`,
         outcome: res ? uiOutcome(res.outcome) : null,
         note: res ? `Resolved by ${res.resolver_id}. Evidence (recorded, not verified): ${res.evidence}` : mv.awaiting_resolution ? "Trading has closed. Waiting for the trusted resolver." : undefined,
       },

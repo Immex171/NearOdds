@@ -1,4 +1,5 @@
 import { ONE, mulPrice, tryParseUnits } from "./amounts";
+import type { Offer, Outcome, Side } from "./types";
 
 /** Contract trading parameters (docs/contract-interface.md, schema v3). */
 export const PRICE_TICK = 10_000n; // 0.01
@@ -36,3 +37,22 @@ export function exactCost(price: bigint, qty: bigint): bigint | null {
 
 export const contractOutcome = (o: "YES" | "NO") => (o === "YES" ? "Yes" : "No") as "Yes" | "No";
 export const uiOutcome = (o: "Yes" | "No") => (o === "Yes" ? "YES" : "NO") as "YES" | "NO";
+
+
+export interface TicketValue { outcome: Outcome; side: Side; mode: "take" | "limit"; offerId: string | null }
+
+/** Offers the user could take: the maker's side is the opposite of the user's, never the user's own, fillable, best price first. */
+export function takeCandidates(book: Offer[], outcome: Outcome, side: Side, exclude?: string | null): Offer[] {
+  const makerSide: Side = side === "buy" ? "sell" : "buy";
+  return book
+    .filter((o) => o.outcome === outcome && o.side === makerSide && o.fillable !== false && o.qty > 0n && o.owner !== exclude)
+    .sort((a, b) => (side === "buy" ? Number(a.price - b.price) : Number(b.price - a.price)));
+}
+
+/** The offer a take would use: the explicit pick if still executable, else (when none was picked) the best one. */
+export function resolveOffer(book: Offer[], v: TicketValue, exclude?: string | null): { offer: Offer | undefined; gone: boolean; candidates: Offer[] } {
+  const candidates = takeCandidates(book, v.outcome, v.side, exclude);
+  if (!v.offerId) return { offer: candidates[0], gone: false, candidates };
+  const offer = candidates.find((o) => o.id === v.offerId);
+  return { offer, gone: !offer, candidates };
+}

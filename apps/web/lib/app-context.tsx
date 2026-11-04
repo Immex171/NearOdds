@@ -19,6 +19,8 @@ interface Ctx {
   marketsError: string | null;
   account: AccountState | null;
   accountError: string | null;
+  /** none = not connected; loading = fetching; ready; error. */
+  accountStatus: "none" | "loading" | "ready" | "error";
   refresh: () => void;
   version: number;
   now: number;
@@ -78,6 +80,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       else setSession((s) => (s.kind === "wallet" ? { kind: "none" } : s));
     });
     if (liveConfigured) void wallet.restore();
+    // Test hook (opt-in): lets browser tests simulate an offer disappearing. No effect unless the flag is set.
+    if (localStorage.getItem("nearodds:debug") === "1") (window as unknown as { __demo?: DemoAdapter }).__demo = demo;
     return off;
   }, []);
 
@@ -123,6 +127,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Ctx>(() => ({
     adapter, session, accountId, markets, marketsError, account, accountError, refresh, version,
+    accountStatus: !accountId ? "none" : accountError && !account ? "error" : account ? "ready" : "loading",
     now: adapter.id === "demo" ? DEMO_NOW : liveNow,
     bookmarks, toggleBookmark, connectOpen, setConnectOpen, helpOpen, setHelpOpen,
     useDemoAccount: () => { store.set("nearodds:session", "demo"); setSession({ kind: "demo" }); setConnectOpen(false); },

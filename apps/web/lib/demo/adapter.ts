@@ -66,6 +66,8 @@ export class DemoAdapter implements DataAdapter {
     try { localStorage.setItem(KEY, enc(this.s)); } catch { /* storage unavailable: state stays in memory */ }
     this.subs.forEach((f) => f());
   }
+  /** Test hook: removes an offer as if someone else filled or cancelled it. */
+  removeOffer(id: string) { this.s.book = this.s.book.filter((o) => o.id !== id); this.emit(); }
   setRejectNext(v: boolean) { this.rejectNext = v; this.emit(); }
   reset() {
     this.s = initial();

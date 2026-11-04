@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { useApp } from "@/lib/app-context";
 import { Logo } from "../ui/Icon";
 import { CategoryNav } from "./CategoryNav";
@@ -20,9 +20,20 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
 export function AppHeader() {
   const { adapter, setHelpOpen } = useApp();
   const live = adapter.id === "near";
+  const ref = useRef<HTMLElement>(null);
+  // Publish the full header height (banner + both rows) so sticky content can sit below it.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const set = () => document.documentElement.style.setProperty("--header-h", `${el.offsetHeight}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-line bg-page">
+      <header ref={ref} className="sticky top-0 z-40 border-b border-line bg-page">
       <div className="border-b border-brand/30 bg-brand/10 text-center py-0.5 text-xs text-[#c5ccff]" role="status">
         {live ? "Testnet, test funds only — live contract data" : "Demo mode — sample markets and balances"}
       </div>

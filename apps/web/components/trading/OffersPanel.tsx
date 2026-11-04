@@ -3,6 +3,7 @@ import { useState } from "react";
 import { formatUnits, mulPrice } from "@/lib/amounts";
 import { priceStr } from "@/lib/format";
 import type { Market, Offer, Outcome } from "@/lib/types";
+import { useApp } from "@/lib/app-context";
 import { EmptyState, Tooltip } from "../ui/bits";
 
 const SHOW = 7;
@@ -20,6 +21,7 @@ export function OffersPanel({ book, market, account, loading, onPick, selectedId
   book: Offer[] | null; market: Market; account: string | null; loading?: boolean; tradable: boolean;
   onPick: (o: Offer) => void; selectedId: string | null; outcome: Outcome; setOutcome: (o: Outcome) => void;
 }) {
+  const { adapter } = useApp();
   const [all, setAll] = useState(false);
   const sel = (book ?? []).filter((o) => o.outcome === outcome && o.fillable !== false);
   const asks = build(sel.filter((o) => o.side === "sell"), true); // best (lowest) first
@@ -35,12 +37,12 @@ export function OffersPanel({ book, market, account, loading, onPick, selectedId
     const w = Number((r.cumQty * 100n) / maxQ);
     const disabled = own || !tradable;
     return (
-      <button key={r.o.id} type="button" disabled={disabled} onClick={() => onPick(r.o)} data-offer-id={r.o.id} data-own={own || undefined}
+      <button key={r.o.id} type="button" disabled={disabled} onClick={() => onPick(r.o)} data-offer-id={r.o.id} data-own={own || undefined} aria-pressed={sel}
         title={own ? `Your offer #${r.o.id}: cancel it from your portfolio` : `Offer #${r.o.id} by ${r.o.owner}`}
         aria-label={`${tone === "ask" ? "Buy" : "Sell"} ${outcome} offer at ${priceStr(r.o.price)}, ${formatUnits(r.o.qty, 0, 4)} shares${own ? ", your offer" : ""}`}
         className={`relative grid w-full grid-cols-3 gap-2 overflow-hidden px-2 py-1.5 text-left text-[13px] ${disabled ? "cursor-not-allowed" : "hover:bg-elev"} ${sel ? "ring-1 ring-inset ring-brand" : ""} ${own ? "outline outline-1 -outline-offset-1 outline-brand/50" : ""}`}>
         <span aria-hidden className={`absolute inset-y-0 right-0 ${tone === "ask" ? "bg-no/10" : "bg-yes/10"}`} style={{ width: `${w}%` }} />
-        <span className={`relative font-semibold ${tone === "ask" ? "text-no" : "text-yes"}`}>{priceStr(r.o.price)}{own && <span className="ml-1.5 rounded bg-brand/25 px-1 text-[10px] font-semibold text-[#c5ccff]">YOU</span>}</span>
+        <span className={`relative font-semibold ${tone === "ask" ? "text-no" : "text-yes"}`}>{priceStr(r.o.price)}{own && <span className="ml-1.5 rounded bg-brand/25 px-1 text-[10px] font-semibold text-[#c5ccff]">YOU</span>}{sel && <span className="ml-1.5 rounded bg-brand px-1 text-[10px] font-semibold text-white">SELECTED</span>}</span>
         <span className="relative text-right">{formatUnits(r.o.qty, 0, 4)}</span>
         <span className="relative text-right text-mute">{formatUnits(r.cumCost, 2, 2)}</span>
       </button>
@@ -63,17 +65,19 @@ export function OffersPanel({ book, market, account, loading, onPick, selectedId
       ) : (
         <div>
           <div className="grid grid-cols-3 gap-2 border-b border-line px-2 pb-1.5 text-xs text-mute">
-            <span>Price ({outcome})</span><span className="text-right">Shares</span>
-            <span className="text-right"><Tooltip text="Total = cumulative collateral from the best price outward, for this side only. Asks and bids are calculated independently.">Total ⓘ</Tooltip></span>
+            <span>Price ({adapter.symbol}/share)</span><span className="text-right">Shares</span>
+            <span className="text-right"><Tooltip text="Cumulative value = collateral needed from the best price outward, for this side only. Asks and bids are calculated independently. Example: 55 × 0.42 = 23.10, then + 95 × 0.43 = 63.95.">Cumulative value ({adapter.symbol}) ⓘ</Tooltip></span>
           </div>
           <div aria-label={`${outcome} sell offers (asks)`}>
+            <p className="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-no">Asks · sell offers</p>
             {askShown.length ? askShown.map((r) => row(r, "ask")) : <p className="px-2 py-3 text-sm text-mute">No sell offers</p>}
           </div>
           <div className="my-1 flex items-center justify-between border-y border-line bg-elev/50 px-2 py-1.5 text-xs text-mute">
-            <span>Spread <b className="text-fg">{spread == null ? "—" : priceStr(spread)}</b></span>
-            <span>Last YES trade <b className="text-fg">{priceStr(market.lastYes)}</b></span>
+            <span>Spread <b className="text-fg">{spread == null ? "—" : `${priceStr(spread)} ${adapter.symbol}`}</b></span>
+            <span>Last YES trade <b className="text-fg">{priceStr(market.lastYes)} {adapter.symbol}</b></span>
           </div>
           <div aria-label={`${outcome} buy offers (bids)`}>
+            <p className="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-yes">Bids · buy offers</p>
             {bidShown.length ? bidShown.map((r) => row(r, "bid")) : <p className="px-2 py-3 text-sm text-mute">No buy offers</p>}
           </div>
           {(asks.length > SHOW || bids.length > SHOW) && (
@@ -81,7 +85,7 @@ export function OffersPanel({ book, market, account, loading, onPick, selectedId
           )}
         </div>
       )}
-      <p className="mt-3 text-xs text-mute">Each row is one real offer. Click one to fill it from the trade ticket; you still choose the quantity. YES and NO have separate books.</p>
+      <p className="mt-3 text-xs text-mute">Select an offer to set up your trade.</p>
     </section>
   );
 }

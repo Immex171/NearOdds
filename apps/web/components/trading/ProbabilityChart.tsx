@@ -91,7 +91,7 @@ export function ProbabilityChart({ points, loading, error, compact = false, heig
               ))}
             </div>
           ) : <span />}
-          {demo && <span className="text-xs text-mute">Demo history (simulated)</span>}
+          {demo && <span className="text-xs text-mute">Probability of YES (%) · simulated history</span>}
         </div>
       )}
     </div>

@@ -52,3 +52,8 @@ export function nearStr(yocto: bigint): string {
   const frac = (yocto % E).toString().padStart(24, "0").slice(0, 4).replace(/0+$/, "");
   return `${whole}${frac ? "." + frac : ""} NEAR`;
 }
+
+/** Explicit UTC, used where an exact instant matters (rules). */
+export function dateTimeUtc(ts: number): string {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(ts) + " UTC";
+}

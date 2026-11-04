@@ -28,8 +28,13 @@ export interface Market {
   trendScore: number;
   resolution: {
     yesWins: string;
+    /** Empty when the canonical config provides a single rules text. */
     noWins: string;
-    source: string;
+    source: { name: string; field: string };
+    /** `at` is a single instant (ms) when the result is read at one moment; null for window/event markets. */
+    observation: { at: number | null; text: string };
+    /** What happens when source data is missing. */
+    ifMissing: string;
     resolver: string;
     outcome: Outcome | null;
     note?: string;

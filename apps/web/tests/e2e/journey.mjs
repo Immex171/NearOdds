@@ -62,76 +62,143 @@ async function desktop() {
   await page.waitForURL(/\/markets\/fed-dec-cut/);
   check("search opens the market via keyboard", true);
 
-  // Trade journey as demo account: open market -> pick offer -> partial quantity -> review -> confirm -> balances
+  // ---- Trade journey as demo account ----
   await page.getByRole("button", { name: "Connect wallet" }).click();
   await page.getByRole("button", { name: /Use demo account/ }).click();
+  await page.evaluate(() => localStorage.setItem("nearodds:debug", "1"));
   await page.goto(`${BASE}/markets/near-10-dec?outcome=NO`);
   await page.getByRole("radio", { name: "NO" }).waitFor();
   check("outcome button preselects NO", (await page.getByRole("radio", { name: "NO" }).getAttribute("aria-checked")) === "true");
   await page.goto(`${BASE}/markets/near-10-dec?outcome=YES`);
+  const ticket = page.getByRole("region", { name: "Trade", exact: true });
   await page.locator('[aria-label="YES sell offers (asks)"] button').first().waitFor();
+
+  // Rules: structured, objective, and consistent with the title
+  const rules = await page.getByRole("region", { name: "Rules" }).innerText();
+  check("rules: strict YES and 10-or-less NO conditions", /strictly greater than \$10\.00/.test(rules) && /\$10\.00 or less/.test(rules));
+  check("rules: trading close (Dec 31 23:00 UTC), observation (Jan 1 00:00 UTC) and source are separate", /Trading closes\s*Dec 31, 2026, 11:00 PM UTC/.test(rules) && /Price observation\s*Jan 1, 2027, 12:00 AM UTC/.test(rules) && /Resolution source\s*CoinGecko/.test(rules));
+  check("rules: missing data does not default to NO", /does not default to NO/.test(rules));
+  check("rules: no description sentence used as a rule", !/rallied alongside/.test(rules));
+  check("title matches the condition (close above $10 on Dec 31)", /close above \$10 on December 31, 2026/.test(await page.locator("h1").innerText()));
+
+  // Balance is explicit and shared
+  check("ticket shows a numeric available balance", (await page.getByTestId("balance").innerText()).includes("500.00 TEST"));
+  check("ticket is compact: no permanently expanded offer list", (await ticket.locator('[aria-label="Available offers"]').count()) === 0);
+  check("selected-offer summary shows price and availability", /Price: 0\.42 TEST\s*·\s*Available: 55 shares/.test(await page.getByTestId("selected-offer").innerText()));
+
+  // Pick the best ask in the order book -> synchronised selection
   const asks = page.locator('[aria-label="YES sell offers (asks)"] button');
-  const bestAsk = asks.last(); // best ask sits nearest the separator
   const askPrices = await asks.evaluateAll((els) => els.map((e) => parseFloat(e.querySelector("span:nth-child(2)").textContent)));
   check("asks sorted descending so the best ask is nearest the spread", askPrices.every((p, i) => i === 0 || askPrices[i - 1] >= p), askPrices.join(","));
-  await bestAsk.click();
-  check("clicking an offer fills the ticket (Buy YES at best ask)", (await page.getByRole("region", { name: "Trade", exact: true }).innerText()).includes("Buy YES") && (await page.getByLabel("Available offers").locator("button[aria-pressed=true]").innerText()).includes("0.42"));
-  await page.locator("#qty").fill("3");
+  await asks.last().click();
+  check("order-book row marked SELECTED", (await asks.last().innerText()).includes("SELECTED"));
+  const book = await page.getByRole("region", { name: "Order book" }).innerText();
+  check("order book labels: Asks, Bids, units, cumulative value", /asks/i.test(book) && /bids/i.test(book) && /Price \(TEST\/share\)/.test(book) && /Cumulative value \(TEST\)/.test(book));
+  check("cumulative arithmetic: 55x0.42=23.10 then +95x0.43=63.95", /0\.42[\s\S]*?55[\s\S]*?23\.10/.test(book) && /0\.43[\s\S]*?95[\s\S]*?63\.95/.test(book));
+
+  await page.locator("#qty").fill("10");
   await page.waitForTimeout(200);
   const summary = await page.getByLabel("Order summary").innerText();
-  check("summary: 3 shares @0.42 = 1.26 TEST, payout 3.00", /1\.26 TEST/.test(summary) && /Payout if YES wins\s*3\.00 TEST/.test(summary), summary.replace(/\n+/g, " | "));
+  check("summary: cost 4.20, fees 0 TEST, payout if YES wins 10.00", /Cost\s*4\.20 TEST/.test(summary) && /Fees\s*0 TEST\s/.test(summary + " ") && /Payout if YES wins\s*10\.00 TEST/.test(summary), summary.replace(/\n+/g, " | "));
+  check("fee copy is exactly 'Fees 0 TEST'", !/none at this stage/.test(summary));
   await page.locator("#qty").fill("500");
-  check("quantity above the offer's remaining amount is blocked", await page.getByRole("button", { name: /Only .* shares left/ }).isDisabled());
+  check("quantity above the offer's remaining amount is blocked", await ticket.getByRole("button", { name: /Only 55 shares available/ }).isDisabled());
   await page.locator("#qty").fill("0.00005");
   check("lot rule rejects sub-lot quantities", (await page.getByRole("alert").first().innerText()).includes("0.0001"));
-  await page.locator("#qty").fill("3");
-  if (shots) await page.screenshot({ path: `${shots}/detail-1440.png` });
-  await page.getByRole("button", { name: "Review order" }).click();
-  if (shots) await page.screenshot({ path: `${shots}/ticket-review-1440.png` });
-  await page.getByRole("button", { name: "Simulate buy" }).click();
+  await page.locator("#qty").fill("10");
+  check("primary action reads 'Review order' then 'Simulate buy YES'", await ticket.getByRole("button", { name: "Review order" }).isEnabled());
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(200);
+  if (shots) await page.screenshot({ path: `${shots}/detail-top-1440.png` });
+  await ticket.getByRole("button", { name: "Review order" }).click();
+  await ticket.getByRole("button", { name: "Simulate buy YES" }).click();
   await page.getByText("Demo trade completed").first().waitFor({ timeout: 5000 });
+  await page.waitForTimeout(500);
+  check("available collateral decreased by 4.20 (495.80 TEST)", (await page.getByTestId("balance").innerText()).includes("495.80 TEST"));
+  check("YES holdings increased by 10 (50)", (await page.locator("main").innerText()).includes("YES 50"));
+  check("offer remaining quantity is now 45", /0\.42[\s\S]*?\b45\b/.test(await asks.last().innerText()) && (await asks.last().innerText()).includes("45"));
+  check("activity records the action exactly once", (await page.getByRole("region", { name: "Activity" }).innerText()).split("Bought 10 YES").length === 2);
+
+  // Buy/Sell and YES/NO switching keep ticket and book in sync
+  await ticket.getByRole("radio", { name: "Sell" }).click();
+  check("switching to Sell selects the best bid", (await page.getByTestId("selected-offer").innerText()).includes("0.40") && (await page.locator('[aria-label="YES buy offers (bids)"] button').first().innerText()).includes("SELECTED"));
+  await ticket.getByRole("radio", { name: "NO" }).click();
+  check("switching to NO moves the order book to NO", (await page.getByRole("region", { name: "Order book" }).getByRole("tab", { name: "NO" }).getAttribute("aria-selected")) === "true");
+  await ticket.getByRole("radio", { name: "Buy" }).click();
+  await ticket.getByRole("radio", { name: "YES" }).click();
+
+  // Change offer selector
+  await ticket.getByRole("button", { name: "Change offer" }).click();
+  await ticket.getByRole("button", { name: /0\.44 TEST/ }).click();
+  check("Change offer selects another offer and the book follows", (await page.getByTestId("selected-offer").innerText()).includes("0.44") && (await page.locator('[aria-label="YES sell offers (asks)"] button[aria-pressed=true]').innerText()).includes("0.44"));
+
+  // Offer becoming unavailable
+  const pickedId = await page.locator('[aria-label="YES sell offers (asks)"] button[aria-pressed=true]').getAttribute("data-offer-id");
+  await page.evaluate((id) => window.__demo.removeOffer(id), pickedId);
   await page.waitForTimeout(400);
-  check("balance updated in ticket (498.74 TEST)", (await page.getByRole("region", { name: "Trade", exact: true }).innerText()).includes("498.74 TEST"));
-  check("shares strip shows 43", (await page.locator("main").innerText()).includes("YES 43"));
+  check("offer removed elsewhere -> 'Offer no longer available'", await ticket.getByRole("button", { name: "Offer no longer available" }).isDisabled());
+
+  // Insufficient balance (limit buy 0.90 x 600 = 540 TEST > available)
+  await ticket.getByRole("radio", { name: "Place a limit offer" }).click();
+  await page.locator("#limit-price").fill("0.90");
+  await page.locator("#qty").fill("600");
+  check("insufficient balance blocks the action", await ticket.getByRole("button", { name: "Insufficient balance" }).isDisabled());
+  await ticket.getByRole("radio", { name: "Sell" }).click();
+  await page.locator("#qty").fill("500");
+  check("insufficient shares blocks the action", await ticket.getByRole("button", { name: "Insufficient shares" }).isDisabled());
+  await ticket.getByRole("radio", { name: "Buy" }).click();
 
   // Rejected wallet transaction leaves state unchanged
   await page.getByRole("button", { name: "Demo account" }).click();
   await page.getByRole("menuitemcheckbox", { name: /reject next/ }).click();
-  await page.locator('[aria-label="YES sell offers (asks)"] button').last().click();
-  await page.locator("#qty").fill("1");
-  await page.getByRole("button", { name: "Review order" }).click();
-  await page.getByRole("button", { name: "Simulate buy" }).click();
+  await page.locator("#limit-price").fill("0.30");
+  await page.locator("#qty").fill("10");
+  await ticket.getByRole("button", { name: "Review order" }).click();
+  await ticket.getByRole("button", { name: "Simulate limit buy YES" }).click();
   await page.getByText(/rejected in the wallet/i).first().waitFor({ timeout: 5000 });
-  check("rejected transaction shows a recoverable error and changes nothing", (await page.getByRole("region", { name: "Trade", exact: true }).innerText()).includes("498.74 TEST"));
+  check("rejected transaction shows a recoverable error and changes nothing", (await page.getByTestId("balance").innerText()).includes("495.80 TEST"));
 
-  // Limit offer creation, own-offer highlight, sticky ticket
-  await page.getByRole("radio", { name: "Place a limit offer" }).click();
+  // Limit offer creation, own-offer highlight
+  await ticket.getByRole("button", { name: "Edit order" }).click().catch(() => {});
   await page.locator("#limit-price").fill("0.305");
   check("price tick is enforced", (await page.getByRole("alert").first().innerText()).includes("0.01"));
   await page.locator("#limit-price").fill("0.30");
-  await page.locator("#qty").fill("10");
   check("limit order reserves 3.00 TEST", /Collateral reserved\s*3\.00 TEST/.test(await page.getByLabel("Order summary").innerText()));
-  await page.getByRole("button", { name: "Review order" }).click();
-  await page.getByRole("button", { name: "Simulate limit buy" }).click();
+  await ticket.getByRole("button", { name: "Review order" }).click();
+  await ticket.getByRole("button", { name: "Simulate limit buy YES" }).click();
   await page.getByText("Demo limit offer placed").first().waitFor({ timeout: 5000 });
   await page.waitForTimeout(400);
   const own = page.locator('[data-own="true"]');
   check("own offer is highlighted and disabled in the book", (await own.count()) >= 1 && (await own.first().isDisabled()));
-  await page.evaluate(() => window.scrollTo(0, 700));
-  await page.waitForTimeout(200);
-  const top = await page.getByRole("region", { name: "Trade", exact: true }).evaluate((e) => Math.round(e.getBoundingClientRect().top));
-  check("ticket stays sticky below the header while scrolling", top > 100 && top < 200, `${top}`);
-  const w = await page.getByRole("region", { name: "Trade", exact: true }).evaluate((e) => Math.round(e.getBoundingClientRect().width));
-  check("ticket is 360px wide", w === 360, `${w}`);
-  await page.evaluate(() => window.scrollTo(0, 0));
-  if (shots) { await page.getByRole("region", { name: "Order book" }).scrollIntoViewIfNeeded(); await page.getByRole("region", { name: "Order book" }).screenshot({ path: `${shots}/orderbook-1440.png` }); }
+  check("balance after limit offer = 492.80 TEST", (await page.getByTestId("balance").innerText()).includes("492.80 TEST"));
 
+  // Sticky ticket: top, middle, bottom
+  const header = () => page.evaluate(() => Math.round(document.querySelector("header").getBoundingClientRect().bottom));
+  const box = () => ticket.evaluate((e) => { const r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), w: Math.round(r.width) }; });
+  const maxScroll = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+  for (const [name, y] of [["top", 0], ["middle", Math.round(maxScroll / 2)], ["bottom", maxScroll]]) {
+    await page.evaluate((v) => window.scrollTo(0, v), y);
+    await page.waitForTimeout(250);
+    const h = await header(), t = await box();
+    const buttonVisible = await ticket.getByRole("button", { name: /Review order|Simulate|Enter|Insufficient|Connect|Offer/ }).last().evaluate((e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });
+    const buySell = await ticket.getByRole("radio", { name: "Buy" }).evaluate((e) => e.getBoundingClientRect().top);
+    check(`ticket at ${name}: below header with gap, within viewport, Buy/Sell and primary action reachable`, t.top >= h + 8 && t.bottom <= 900 && buySell >= h && buttonVisible, `header=${h} ticket=${t.top}-${t.bottom} w=${t.w}`);
+    if (name === "bottom" && shots) await page.screenshot({ path: `${shots}/detail-bottom-1440.png` });
+  }
+  check("ticket is 360px wide", (await box()).w === 360);
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  // Refresh preserves state; Portfolio shows the same balances
+  await page.reload();
+  await page.getByTestId("balance").waitFor();
+  await page.waitForTimeout(600);
+  check("refresh preserves demo state (492.80 TEST)", (await page.getByTestId("balance").innerText()).includes("492.80 TEST"));
   await page.goto(`${BASE}/portfolio`);
   await page.waitForSelector("text=Positions");
   await page.waitForTimeout(500);
   const text = await page.locator("main").innerText();
-  if (process.env.DEBUG_TEXT) console.log(text.replace(/\n+/g, " | "));
-  check("portfolio shows 58 YES shares incl. 15 reserved in offers (40 + 3 bought + 15)", /58 \(15 in offers\)/.test(text));
+  check("portfolio shows the same available balance", text.includes("492.80 TEST"));
+  check("portfolio shows 65 YES (40 + 10 bought + 15 in offers)", /65 \(15 in offers\)/.test(text));
   if (shots) await page.screenshot({ path: `${shots}/portfolio-1440.png` });
 
   // Offer cancellation updates committed collateral (seeded 12.00 + new 3.00)
@@ -142,6 +209,10 @@ async function desktop() {
   await page.waitForTimeout(1500);
   const committedAfter = await committed();
   check("cancelling a buy offer releases committed collateral", committedBefore !== committedAfter, `${committedBefore} -> ${committedAfter}`);
+  const availPortfolio = await page.getByText("Available collateral").locator("xpath=following-sibling::p[1]").innerText();
+  await page.goto(`${BASE}/funds`);
+  await page.waitForSelector("text=In your wallet");
+  check("Funds shows the same available balance as Portfolio", (await page.locator("main").innerText()).includes(availPortfolio), availPortfolio);
 
   // Manage shares
   await page.goto(`${BASE}/markets/near-10-dec`);

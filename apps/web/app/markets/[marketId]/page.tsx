@@ -4,10 +4,11 @@ import { use, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useAdapterData, useApp } from "@/lib/app-context";
-import { dateTime, money, movement, priceStr, statusLabel, yesPct } from "@/lib/format";
+import { dateTimeUtc, money, movement, priceStr, statusLabel, yesPct } from "@/lib/format";
 import { bestPrice } from "@/lib/quote";
+import { resolveOffer, type TicketValue } from "@/lib/trading";
 import { useMediaQuery } from "@/lib/hooks";
-import type { Offer, Outcome, Side } from "@/lib/types";
+import type { Offer, Outcome } from "@/lib/types";
 import { ActivityList } from "@/components/trading/ActivityList";
 import { ManageShares } from "@/components/trading/ManageShares";
 import { OffersPanel } from "@/components/trading/OffersPanel";
@@ -25,8 +26,7 @@ function Detail({ id }: { id: string }) {
   const desktop = useMediaQuery("(min-width: 1024px)");
   const [sheet, setSheet] = useState(false);
   const [manage, setManage] = useState(false);
-  const [pick, setPick] = useState<{ seq: number; outcome: Outcome; side: Side; offerId: string } | null>(null);
-  const [bookOutcome, setBookOutcome] = useState<Outcome>(initial);
+  const [ticket, setTicket] = useState<TicketValue>({ outcome: initial, side: "buy", mode: "take", offerId: null });
   const market = useAdapterData((a) => a.getMarket(id), [id]);
   const book = useAdapterData((a) => a.getBook(id), [id]);
   const hist = useAdapterData((a) => a.getHistory(id), [id]);
@@ -43,13 +43,13 @@ function Detail({ id }: { id: string }) {
     try { await navigator.clipboard.writeText(window.location.href); showToast("Link copied"); } catch { showToast("Couldn’t copy. Copy the address bar instead."); }
   };
   const tone = m.status === "open" ? "yes" : m.status === "resolved" ? "brand" : "warn";
+  const patch = (p: Partial<TicketValue>) => setTicket((t) => ({ ...t, ...p }));
   const onPick = (o: Offer) => {
-    setPick({ seq: (pick?.seq ?? 0) + 1, outcome: o.outcome, side: o.side === "sell" ? "buy" : "sell", offerId: o.id });
-    setBookOutcome(o.outcome);
+    patch({ outcome: o.outcome, side: o.side === "sell" ? "buy" : "sell", mode: "take", offerId: o.id });
     if (!desktop) setSheet(true);
   };
-  const ticket = <TradeTicket key={`${initial}-${pick?.seq ?? 0}`} m={m} book={book.data ?? []}
-    init={pick ? { outcome: pick.outcome, side: pick.side, offerId: pick.offerId } : { outcome: initial }} />;
+  const selected = resolveOffer(book.data ?? [], ticket, account?.accountId).offer;
+  const ticketEl = <TradeTicket m={m} book={book.data ?? []} value={ticket} onChange={patch} />;
   const yesAsk = bestPrice(book.data ?? [], "YES", "buy");
   const yesBid = bestPrice(book.data ?? [], "YES", "sell");
   const holds = account?.positions.filter((p) => p.marketId === m.id) ?? [];
@@ -65,7 +65,7 @@ function Detail({ id }: { id: string }) {
             <h1 className="text-2xl font-semibold leading-tight md:text-[28px]">{m.question}</h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-mute">
               <Badge tone={tone}>{statusLabel[m.status]}</Badge>
-              <span>{m.status === "open" ? "Closes" : "Closed"} {dateTime(m.closesAt)}</span>
+              <span>{m.status === "open" ? "Closes" : "Closed"} {dateTimeUtc(m.closesAt)}</span>
               <span>Volume <b className="text-fg">{money(m.volume, adapter.symbol, 0)}</b></span>
             </div>
           </div>
@@ -79,18 +79,17 @@ function Detail({ id }: { id: string }) {
           <div className="mb-3 flex flex-wrap items-end gap-x-6 gap-y-3">
             <div>
               <p className="text-xs text-mute">
-                <Tooltip text="Headline probability = price of the most recent YES trade (a NO trade is shown as its YES-equivalent). It is a display value, not an executable price and not what the ticket uses.">Chance of YES ⓘ</Tooltip>
+                <Tooltip text="Headline probability = price of the most recent YES trade (a NO trade is shown as its YES-equivalent). It is a display value, not an executable price, and the ticket never uses it.">Chance of YES ⓘ</Tooltip>
               </p>
               <p className="text-3xl font-semibold text-yes">{pct == null ? "—" : `${pct}%`}</p>
             </div>
             {mv ? <p className={`pb-1 text-sm font-medium ${mv.delta >= 0 ? "text-yes" : "text-no"}`}>{mv.label}</p> : <p className="pb-1 text-sm text-mute">{pct == null ? "No trades yet" : "Price movement unavailable"}</p>}
             <dl className="ml-auto grid grid-cols-3 gap-x-5 text-right text-xs">
-              <div><dt className="text-mute">Last YES trade</dt><dd className="text-sm font-semibold">{priceStr(m.lastYes)}</dd></div>
-              <div><dt className="text-mute">Best YES ask</dt><dd className="text-sm font-semibold text-no">{priceStr(yesAsk)}</dd></div>
-              <div><dt className="text-mute">Best YES bid</dt><dd className="text-sm font-semibold text-yes">{priceStr(yesBid)}</dd></div>
+              <div><dt className="text-mute">Last YES trade</dt><dd className="text-sm font-semibold">{priceStr(m.lastYes)} {adapter.symbol}</dd></div>
+              <div><dt className="text-mute">Best YES ask</dt><dd className="text-sm font-semibold text-no">{priceStr(yesAsk)} {adapter.symbol}</dd></div>
+              <div><dt className="text-mute">Best YES bid</dt><dd className="text-sm font-semibold text-yes">{priceStr(yesBid)} {adapter.symbol}</dd></div>
             </dl>
           </div>
-          <p className="mb-1 text-xs text-mute">Implied probability of YES, % (last-trade based). {adapter.id === "demo" ? "Demo data: simulated history." : "Live history needs a price indexer, which doesn’t exist yet."}</p>
           <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} demo={adapter.id === "demo"} height={desktop ? 300 : 220} />
         </section>
 
@@ -102,19 +101,24 @@ function Detail({ id }: { id: string }) {
         )}
 
         <OffersPanel book={book.data} market={m} account={account?.accountId ?? null} loading={book.loading} tradable={m.status === "open"}
-          onPick={onPick} selectedId={pick?.offerId ?? null} outcome={bookOutcome} setOutcome={setBookOutcome} />
+          onPick={onPick} selectedId={ticket.mode === "take" ? selected?.id ?? null : null} outcome={ticket.outcome} setOutcome={(o) => patch({ outcome: o, offerId: null })} />
         <ResolutionRules m={m} />
         <ActivityList items={act.data} loading={act.loading} />
         <Btn variant="outline" onClick={() => setManage(true)} className="w-full sm:w-auto">Manage shares</Btn>
       </div>
 
-      {desktop && <aside><div className="sticky top-[150px] space-y-3">{ticket}</div></aside>}
+      {desktop && (
+        <aside className="self-stretch">
+          {/* Sticks below the full header (banner + both rows, measured into --header-h), bounded by the viewport (16px above, 32px for the page bottom padding) so the ticket scrolls internally and never rides under the header. */}
+          <div className="sticky flex flex-col" style={{ top: "calc(var(--header-h, 140px) + 16px)", maxHeight: "calc(100dvh - var(--header-h, 140px) - 48px)" }}>{ticketEl}</div>
+        </aside>
+      )}
       {!desktop && (
         <>
           <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-page/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
             <Btn className="min-h-12 w-full text-base" onClick={() => setSheet(true)}>Trade</Btn>
           </div>
-          <Modal open={sheet} onClose={() => setSheet(false)} title="Trade" variant="sheet">{ticket}</Modal>
+          <Modal open={sheet} onClose={() => setSheet(false)} title="Trade" variant="sheet">{ticketEl}</Modal>
         </>
       )}
       <ManageShares m={m} open={manage} onClose={() => setManage(false)} />

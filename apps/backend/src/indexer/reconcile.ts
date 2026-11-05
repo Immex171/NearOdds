@@ -39,6 +39,8 @@ export async function reconcileMarket(db: Db, rpc: Rpc, marketRef: string, heigh
 
   const accounts = (await db.query("SELECT account_id FROM account_state WHERE market_ref=$1", [marketRef])).rows.map((r: any) => r.account_id as string);
   for (const o of offers) if (!accounts.includes(o.owner_id)) accounts.push(o.owner_id);
+  // participants seen in ANY event (including historical ones that could not change balances) are hydrated from the views too
+  for (const r of (await db.query("SELECT account_id FROM market_participants WHERE market_ref=$1", [marketRef])).rows) if (!accounts.includes(r.account_id)) accounts.push(r.account_id);
   const views = new Map<string, AccountView | null>();
   const wd = new Map<string, WithdrawalView | null>();
   try {
@@ -107,6 +109,7 @@ export async function reconcileMarket(db: Db, rpc: Rpc, marketRef: string, heigh
         }
       }
     }
+    await c.query("UPDATE market_participants SET hydrated_at=now() WHERE market_ref=$1 AND account_id = ANY($2)", [marketRef, accounts]);
     rep.ok = rep.offerDrift.length === 0 && rep.accountDrift.length === 0;
     await c.query("UPDATE markets SET reconcile=$2 WHERE market_ref=$1", [marketRef, JSON.stringify(rep)]);
   });

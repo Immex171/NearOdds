@@ -4,7 +4,7 @@ import type { Db } from "../db/index.js";
 import { withTx } from "../db/index.js";
 import type { SigningKey } from "../near/keystore.js";
 import { RpcUnavailableError } from "../near/rpc.js";
-import { TxBlockedError, TxFailedError, TxUncertainError, type TxExecutor } from "../near/tx.js";
+import { SigningRefusedError, TxBlockedError, TxFailedError, TxUncertainError, type SigningGuard, type TxExecutor } from "../near/tx.js";
 import type { BotConfig, Slot } from "./config.js";
 import type { Action, Facts, Snapshot } from "./decide.js";
 import { cost } from "./strategy.js";
@@ -47,11 +47,12 @@ export class ProposalConflict extends Error { constructor(readonly code: string,
 export async function proposeOps(db: Db, bot: BotRow, m: MarketCtx, expectedVersion: number, acts: Action[], snap: Snapshot): Promise<OpRow[]> {
   return withTx(db, async (c) => {
     await c.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`botcap:${bot.id}`]);
-    const cur = (await c.query("SELECT desired_state, config_version, config FROM trading_bots WHERE id=$1 FOR SHARE", [bot.id])).rows[0];
+    const cur = (await c.query("SELECT desired_state, mode, config_version, config FROM trading_bots WHERE id=$1 FOR SHARE", [bot.id])).rows[0];
     const cfg: BotConfig = cur.config; const L = cfg.limits;
     const growing = acts.some((a) => a.type !== "cancel");
     if (growing && cur.desired_state !== "running") throw new ProposalConflict("bot_not_running", `bot is ${cur.desired_state}`);
     if (growing && cur.config_version !== expectedVersion) throw new ProposalConflict("config_changed", `configuration changed (v${expectedVersion} -> v${cur.config_version})`);
+    if (cur.mode !== "execute") throw new ProposalConflict("not_execute_mode", "bot is in paper mode: nothing may be proposed");
     const pend = (await c.query("SELECT market_ref, kind, params, commit_native FROM bot_operations WHERE bot_id=$1 AND state = ANY($2)", [bot.id, PENDING])).rows;
     if (pend.some((p: any) => p.market_ref === m.market_ref)) throw new ProposalConflict("operations_in_flight", "this market already has operations in flight");
     const pendDeposits = pend.filter((p: any) => p.kind === "deposit").reduce((a: bigint, p: any) => a + BigInt(p.params.amount), 0n);
@@ -130,22 +131,37 @@ async function setOp(db: Db, id: string, state: string, extra: { tx_hash?: strin
 }
 
 /**
- * Drive ONE operation to a verdict under its stable op key. An unsigned operation is re-validated first (the bot may have been
- * paused, or its configuration changed, since it was proposed). A signed one is always resumed with its original bytes.
+ * The guarded transition into durable signing. It runs inside the transaction that stores the signed bytes, under
+ *   - a SHARE lock on the bot row (stop / pause / config / mode changes take the same row exclusively, so they serialise with us) and
+ *   - an exclusive lock on the operation row,
+ * and refuses unless the operation is still pending AND the bot still wants it (execute mode; running with the same config version
+ * for anything that grows exposure). A cancelled operation can therefore never be signed; one that passed this point is signed
+ * and from then on is only reconciled.
+ */
+export function signingGuard(botId: string, op: Pick<OpRow, "id" | "kind" | "config_version">): SigningGuard {
+  return async (c) => {
+    const b = (await c.query("SELECT desired_state, mode, config_version FROM trading_bots WHERE id=$1 FOR SHARE", [botId])).rows[0];
+    const o = (await c.query("SELECT state FROM bot_operations WHERE id=$1 FOR UPDATE", [op.id])).rows[0];
+    if (!b || !o || (o.state !== "proposed" && o.state !== "submitted")) return false;
+    if (b.mode !== "execute") return false;
+    if (op.kind !== "cancel_offer" && (b.desired_state !== "running" || b.config_version !== op.config_version)) return false;
+    return true;
+  };
+}
+
+/**
+ * Drive ONE operation to a verdict under its stable op key. A signed operation is always resumed with its original bytes;
+ * an unsigned one passes the signing guard (above) or is cancelled without any signature.
  */
 export async function runOperation(d: ExecDeps, bot: BotRow, m: MarketCtx, op: OpRow): Promise<OpResult> {
   const { db, tx } = d;
   const journal = await tx.getJournal(op.op_key);
-  if (!journal && op.kind !== "cancel_offer") {
-    const cur = (await db.query("SELECT desired_state, config_version FROM trading_bots WHERE id=$1", [bot.id])).rows[0];
-    if (cur.desired_state !== "running" || cur.config_version !== op.config_version) { await setOp(db, op.id, "cancelled", { failure: `not signed: bot ${cur.desired_state}, config v${cur.config_version}` }); return "cancelled"; }
-  }
   const signer = (await d.signer(bot)) ?? (journal ? await d.signer({ ...bot, account_id: journal.signer_id }) : null);
   if (!signer) return "blocked";
   const call = buildCall(op, m, bot);
   try {
     await setOp(db, op.id, "submitted");
-    const out = await tx.execute(op.op_key, null, signer, call.receiver, call.actions, call.desc);
+    const out = await tx.execute(op.op_key, null, signer, call.receiver, call.actions, call.desc, journal ? undefined : signingGuard(bot.id, op));
     const hash = out.transaction.hash as string;
     let offerId: string | undefined;
     if (op.kind === "create_offer") {
@@ -160,28 +176,42 @@ export async function runOperation(d: ExecDeps, bot: BotRow, m: MarketCtx, op: O
       await db.query("UPDATE bot_quotes SET state='cancelled', close_reason=$4, closed_at=now(), remaining=0 WHERE bot_id=$1 AND market_ref=$2 AND offer_id=$3 AND state='active'", [bot.id, m.market_ref, op.params.offerId, op.params.reason ?? "cancelled"]);
     }
     await setOp(db, op.id, "confirmed", { tx_hash: hash, result: successJson(out) ?? {}, offer_id: offerId });
-    await recordSpend(db, bot.id, op.id, op.kind, op.params, out);
+    await recordSpend(db, bot.id, op.id, op.kind, op.params, out, false);
     return "confirmed";
   } catch (e) {
+    if (e instanceof SigningRefusedError) { await setOp(db, op.id, "cancelled", { failure: "not signed: the bot was stopped, paused, reconfigured or the operation was cancelled" }); return "cancelled"; }
     if (e instanceof TxUncertainError) { await setOp(db, op.id, "uncertain", { tx_hash: e.txHash }); return "uncertain"; }
-    if (e instanceof TxFailedError) { await setOp(db, op.id, "failed", { tx_hash: e.txHash, failure: e.failure.slice(0, 500) }); return "failed"; }
+    if (e instanceof TxFailedError) {
+      await setOp(db, op.id, "failed", { tx_hash: e.txHash, failure: e.failure.slice(0, 500) });
+      await recoverBotSpend(db, bot.id);   // a failed transaction still burnt gas: record it (exactly once) from the journal outcome
+      return "failed";
+    }
     if (e instanceof TxBlockedError) return "blocked";
     if (e instanceof RpcUnavailableError) return "blocked";
     throw e;
   }
 }
 
-async function recordSpend(db: Db, botId: string, opId: string, kind: string, params: any, outcome: any) {
-  const dep = kind === "register_token" || kind === "register_market" ? BigInt(params.deposit) : 0n;
-  await db.query("INSERT INTO bot_native_spend(op_id, bot_id, yocto) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", [opId, botId, (dep + burnt(outcome)).toString()]);
+/**
+ * Actual native spending of one operation, from its final journal outcome:
+ *   burnt gas (real for successful AND failed transactions) + the attached deposit when it stayed spent (successful registrations).
+ * A failed transaction's attached deposit is refunded: recorded separately as `refunded_yocto`, never counted as spending.
+ * Exactly once per operation (primary key on op_id).
+ */
+async function recordSpend(db: Db, botId: string, opId: string, kind: string, params: any, outcome: any, failed: boolean) {
+  const attached = kind === "register_token" || kind === "register_market" ? BigInt(params.deposit) : 0n;
+  const kept = failed ? 0n : attached, refunded = failed ? attached : 0n, fee = burnt(outcome);
+  await db.query("INSERT INTO bot_native_spend(op_id, bot_id, yocto, burnt_yocto, deposit_yocto, refunded_yocto, op_outcome) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
+    [opId, botId, (kept + fee).toString(), fee.toString(), kept.toString(), refunded.toString(), failed ? "failed" : "confirmed"]);
 }
 
-/** Rebuild missing spend records for confirmed operations from the tx journal (crash between confirmation and recording). */
+/** Rebuild missing spend records (confirmed AND failed operations) from the tx journal: covers crashes before recording. */
 export async function recoverBotSpend(db: Db, botId: string): Promise<number> {
   const rows = (await db.query(
-    `SELECT o.id, o.kind, o.params, j.outcome FROM bot_operations o JOIN tx_journal j ON j.op_key = o.op_key
-     WHERE o.bot_id=$1 AND o.state='confirmed' AND j.state='succeeded' AND NOT EXISTS (SELECT 1 FROM bot_native_spend s WHERE s.op_id=o.id)`, [botId])).rows;
-  for (const r of rows) await recordSpend(db, botId, r.id, r.kind, r.params, r.outcome);
+    `SELECT o.id, o.kind, o.params, o.state, j.outcome FROM bot_operations o JOIN tx_journal j ON j.op_key = o.op_key
+     WHERE o.bot_id=$1 AND o.state IN ('confirmed','failed') AND j.state IN ('succeeded','failed') AND j.outcome IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM bot_native_spend s WHERE s.op_id=o.id)`, [botId])).rows;
+  for (const r of rows) await recordSpend(db, botId, r.id, r.kind, r.params, r.outcome, r.state === "failed");
   return rows.length;
 }
 

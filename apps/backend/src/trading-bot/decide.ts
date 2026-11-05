@@ -41,11 +41,12 @@ const big = (v: string) => BigInt(v);
 export function decide(inp: DecideInput): Decision {
   const { snap, facts, cfg } = inp;
   const L = cfg.limits, S = cfg.strategy, T = snap.trading;
-  const mcfg = cfg.markets.find((m) => m.marketRef === inp.marketRef);
+  const configured = cfg.markets.find((m) => m.marketRef === inp.marketRef);
+  // A market removed from the configuration is cancellation/reconciliation-only until its quotes and operations are gone.
+  const mcfg = configured ?? { marketRef: inp.marketRef, enabled: false, reference: null, quantityPerQuote: undefined };
   const reasons: Reason[] = [];
   let legInfo: Pick<Decision, "legs" | "referenceNo"> = { legs: [], referenceNo: null };
   const out = (outcome: Decision["outcome"], actions: Action[] = [], extra: Partial<Decision> = {}): Decision => ({ outcome, actions, reasons, needsFunding: false, ...legInfo, ...extra });
-  if (!mcfg) { reasons.push({ code: "market_not_configured", message: "market is not in the bot configuration" }); return out("skipped"); }
 
   // Chain data must be recent.
   const nowNs = snap.blockTsNs;
@@ -56,7 +57,8 @@ export function decide(inp: DecideInput): Decision {
   let canQuote = true;
   const stop = (code: string, message: string) => { canQuote = false; reasons.push({ code, message }); };
   if (facts.desired !== "running") stop("not_running", `bot desired state is ${facts.desired}`);
-  if (!mcfg.enabled) stop("market_disabled", "market is disabled in the bot configuration");
+  if (!configured) stop("market_removed", "market was removed from the bot configuration: only reconciliation and cancellation continue");
+  else if (!mcfg.enabled) stop("market_disabled", "market is disabled in the bot configuration");
   if (snap.market.resolved || snap.market.status === "Resolved") stop("market_resolved", "market is resolved: no new quotes; remaining positions are reported");
   else if (snap.market.status !== "Open" || !snap.market.tradingOpen) stop("market_closed", `market status is ${snap.market.status}`);
   const bufferNs = BigInt(L.cutoffBufferSeconds) * 1_000_000_000n;
@@ -103,9 +105,23 @@ export function decide(inp: DecideInput): Decision {
     return out("acted", capByRate([{ type: "deposit", amount: dep }], facts, L.maxTransactionsPerMinute, reasons));
   }
   if (!facts.trancheDone.split && split > 0n) {
-    if (big(account.available_collateral) < split) { reasons.push({ code: "needs_collateral", message: `available market collateral ${account.available_collateral} is below the split ${split}` }); return out("skipped", [], { needsFunding: true }); }
-    if (!nativeOk(fee)) return out("skipped", [], { needsFunding: true });
-    return out("acted", capByRate([{ type: "split", amount: split }], facts, L.maxTransactionsPerMinute, reasons));
+    // A split adds the same amount of YES and NO. Check the RESULTING exposure: owned (available + reserved) + open buys that may
+    // still acquire shares + the split must stay within both inventory limits (also for later funding tranches).
+    const buysOf = (o: "Yes" | "No") => mine.filter((x) => x.outcome === o && x.side === "Buy").reduce((a, x) => a + big(x.remaining_quantity), 0n);
+    const headYes = big(L.maxYesInventory) - (big(account.yes) + big(account.reserved_yes)) - buysOf("Yes");
+    const headNo = big(L.maxNoInventory) - (big(account.no) + big(account.reserved_no)) - buysOf("No");
+    const head = headYes < headNo ? headYes : headNo;
+    let allowed = floorLot(split < head ? split : head > 0n ? head : 0n, T.lot);
+    if (allowed < split) {
+      if (allowed >= T.minOrder) reasons.push({ code: "split_reduced", message: `split reduced from ${split} to ${allowed} by the YES/NO inventory limits (headroom YES ${headYes}, NO ${headNo})` });
+      else { reasons.push({ code: "split_blocked_by_inventory_limit", message: `a split of ${split} would exceed the YES/NO inventory limits (headroom YES ${headYes}, NO ${headNo}); no split` }); allowed = 0n; }
+    }
+    if (allowed > 0n) {
+      if (big(account.available_collateral) < allowed) { reasons.push({ code: "needs_collateral", message: `available market collateral ${account.available_collateral} is below the split ${allowed}` }); return out("skipped", [], { needsFunding: true }); }
+      if (!nativeOk(fee)) return out("skipped", [], { needsFunding: true });
+      return out("acted", capByRate([{ type: "split", amount: allowed }], facts, L.maxTransactionsPerMinute, reasons));
+    }
+    // blocked by limits: keep going and quote with what is held
   }
 
   // ---- quotes
@@ -158,6 +174,11 @@ export function decide(inp: DecideInput): Decision {
     else if (want < T.minOrder || rem > want) stale = "over_limit";
     else if (rem * 100n < BigInt(S.requoteThresholdPct) * want) stale = "undersized";
     if (stale) cancels.push({ type: "cancel", offerId: best.offer_id, slot, reason: stale }); else keep.set(slot, best);
+  }
+  // Active-offer cap (possibly just reduced): keep the offers with the largest remaining size (ties: slot order, then lowest id) and cancel the rest.
+  if (keep.size > maxOffers) {
+    const rank = (a: OfferView, b: OfferView) => (big(b.remaining_quantity) > big(a.remaining_quantity) ? 1 : big(b.remaining_quantity) < big(a.remaining_quantity) ? -1 : 0) || SLOTS.indexOf(slotOfOffer(a)) - SLOTS.indexOf(slotOfOffer(b)) || Number(big(a.offer_id) - big(b.offer_id));
+    for (const o of [...keep.values()].sort(rank).slice(maxOffers)) { cancels.push({ type: "cancel", offerId: o.offer_id, slot: slotOfOffer(o), reason: "active_offer_limit" }); keep.delete(slotOfOffer(o)); }
   }
   if (cancels.length) return out("acted", capByRate(cancels, facts, L.maxTransactionsPerMinute, reasons), { legs: outLegs, referenceNo: referenceNo.toString() });
 

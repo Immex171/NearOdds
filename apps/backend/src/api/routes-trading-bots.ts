@@ -8,6 +8,7 @@ import { loadFacts, loadBot, type BotRow } from "../trading-bot/ops.js";
 import { credentialsConfigured, executionNetworkAllowed } from "../trading-bot/signer.js";
 import { gatherStateFacts, deriveState } from "../trading-bot/state.js";
 import { RpcUnavailableError } from "../near/rpc.js";
+import { withTx } from "../db/index.js";
 
 const ser = (v: unknown) => JSON.parse(JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
 
@@ -37,6 +38,14 @@ export async function botStatus(ctx: Ctx, bot: BotRow) {
   const lastDec = (await db.query("SELECT DISTINCT ON (market_ref) market_ref, id, outcome, reasons, actions, created_at FROM bot_decisions WHERE bot_id=$1 ORDER BY market_ref, id DESC", [bot.id])).rows;
   const fillCount = (await db.query("SELECT COUNT(*)::int n, COALESCE(SUM(collateral_amount),0) v FROM fills WHERE maker_id=$1 OR taker_id=$1", [bot.account_id])).rows[0];
   const now = Date.now();
+  // Markets removed from the configuration stay visible (cancellation/reconciliation only) until their quotes and operations are gone.
+  const inCfg = new Set(bot.config.markets.map((m) => m.marketRef));
+  const extra = new Set<string>();
+  for (const q of quotes) if (!inCfg.has(q.market_ref)) extra.add(q.market_ref);
+  for (const o of pend) if (!inCfg.has(o.market_ref)) extra.add(o.market_ref);
+  const extraRows = extra.size ? (await db.query("SELECT market_ref, contract_id, internal_market_id, token_id, network, question FROM markets WHERE market_ref = ANY($1)", [[...extra]])).rows : [];
+  mk.push(...extraRows);
+  const entries = [...bot.config.markets.map((m) => ({ ...m, removed: false })), ...[...extra].map((r) => ({ marketRef: r, enabled: false, reference: null, quantityPerQuote: undefined, removed: true }))];
   return {
     id: bot.id, slug: bot.slug,
     account: { accountId: bot.account_id, network: bot.network, credentialsConfigured: credsOk },
@@ -44,11 +53,11 @@ export async function botStatus(ctx: Ctx, bot: BotRow) {
     execution: { enabledByEnvironment: cfg.bot.executionEnabled, networkAllowed: executionNetworkAllowed(bot.network) && bot.network === cfg.network, note: "Real transactions are sent only in execute mode, with BOT_EXECUTION_ENABLED=true, on Sandbox or testnet, with verified credentials." },
     limits: bot.config.limits, strategy: bot.config.strategy, funding: bot.config.funding,
     spending: { nativeSpentYocto: String(spent), nativeLimitYocto: bot.config.limits.maxNativeSpendYocto, collateralDepositedByMarket: Object.fromEntries(alloc.map((a: any) => [a.market_ref, String(a.s)])) },
-    markets: bot.config.markets.map((m) => {
+    markets: entries.map((m) => {
       const s = st.find((x: any) => x.market_ref === m.marketRef); const row = mk.find((x: any) => x.market_ref === m.marketRef); const d = lastDec.find((x: any) => x.market_ref === m.marketRef);
       const scale = 1_000_000n;
       return {
-        marketRef: m.marketRef, enabled: m.enabled, question: row?.question ?? null,
+        marketRef: m.marketRef, enabled: m.enabled, removedFromConfig: m.removed, question: row?.question ?? null,
         contract: row ? { contractId: row.contract_id, marketId: row.internal_market_id, tokenId: row.token_id } : null,
         reference: m.reference ? { yesPrice: m.reference.yesPrice, noPrice: (scale - BigInt(m.reference.yesPrice)).toString(), label: m.reference.label, source: m.reference.source, asOf: m.reference.asOf, expiresAt: m.reference.expiresAt, expired: now >= Date.parse(m.reference.expiresAt), note: "A strategy input, not an independent probability estimate." } : null,
         lastChainRead: s ? { at: s.last_chain_read_at, blockHeight: s.block_height === null ? null : Number(s.block_height) } : null,
@@ -140,7 +149,15 @@ export function registerTradingBotRoutes(app: FastifyInstance, ctx: Ctx) {
       if (!executionNetworkAllowed(bot.network) || bot.network !== cfg.network) throw new HttpError(409, "network_not_allowed", "execution is allowed only on Sandbox or testnet matching the worker's network");
       if (!credentialsConfigured(bot)) throw new HttpError(409, "setup_required", `credentials not configured (env ${bot.credentials_env})`);
     }
-    await db.query("UPDATE trading_bots SET mode=$2, desired_state='running', updated_at=now() WHERE id=$1", [bot.id, mode]);
+    // Atomic with proposals/signing (they hold a SHARE lock on this row): leaving execute mode is only possible when nothing is live.
+    await withTx(db, async (c) => {
+      const cur = (await c.query("SELECT mode FROM trading_bots WHERE id=$1 FOR UPDATE", [bot.id])).rows[0];
+      if (cur.mode === "execute" && mode === "paper") {
+        const w = (await c.query("SELECT (SELECT COUNT(*) FROM bot_operations WHERE bot_id=$1 AND state IN ('proposed','submitted','uncertain'))::int ops, (SELECT COUNT(*) FROM bot_quotes WHERE bot_id=$1 AND state='active')::int quotes", [bot.id])).rows[0];
+        if (w.ops > 0 || w.quotes > 0) throw new HttpError(409, "outstanding_work", `cannot switch to paper mode while ${w.ops} operation(s) are unresolved and ${w.quotes} quote(s) are live. Stop the bot, wait until it reports "stopped", then start it in paper mode.`, w);
+      }
+      await c.query("UPDATE trading_bots SET mode=$2, desired_state='running', updated_at=now() WHERE id=$1", [bot.id, mode]);
+    });
     await persistState(ctx, bot);
     return ser(await botStatus(ctx, await get(bot.id)));
   });
@@ -148,11 +165,13 @@ export function registerTradingBotRoutes(app: FastifyInstance, ctx: Ctx) {
   const stopLike = (path: "pause" | "stop", desired: "paused" | "stopped") => app.post(`${base}/:id/${path}`, async (req) => {
     await requireAdmin(ctx, req);
     const bot = await get((req.params as any).id);
-    // 1. no new trading intentions, effective immediately (proposals re-check desired_state under a lock)
-    await db.query("UPDATE trading_bots SET desired_state=$2, updated_at=now() WHERE id=$1", [bot.id, desired]);
-    // 2. operations that were proposed but never signed are cancelled; signed ones are reconciled by the worker
-    await db.query(`UPDATE bot_operations o SET state='cancelled', failure='cancelled before signing: ${path} requested', updated_at=now()
-                    WHERE bot_id=$1 AND state='proposed' AND kind <> 'cancel_offer' AND NOT EXISTS (SELECT 1 FROM tx_journal j WHERE j.op_key=o.op_key)`, [bot.id]);
+    // In ONE transaction (the signing guard locks the same rows in the same order): set the desired state, then cancel every
+    // operation that has no signed transaction yet. Anything already signed stays tracked and is reconciled by the worker.
+    await withTx(db, async (c) => {
+      await c.query("UPDATE trading_bots SET desired_state=$2, updated_at=now() WHERE id=$1", [bot.id, desired]);
+      await c.query(`UPDATE bot_operations o SET state='cancelled', failure=$2, updated_at=now()
+                     WHERE bot_id=$1 AND state IN ('proposed','submitted') AND kind <> 'cancel_offer' AND NOT EXISTS (SELECT 1 FROM tx_journal j WHERE j.op_key=o.op_key)`, [bot.id, `cancelled before signing: ${path} requested`]);
+    });
     // 3. the worker cancels remaining quotes; the state stays pausing/stopping until nothing is unresolved
     await persistState(ctx, bot);
     return ser(await botStatus(ctx, await get(bot.id)));

@@ -35,6 +35,11 @@ async function indexLoop() {
       console.log(`[indexer] checkpoint ${st?.checkpoint} tip ${st?.tip} lag ${st?.lag}${p ? ` | history scan ${p.t ?? "starting"} of ${st?.checkpoint}` : ""}${st?.openGaps ? ` | open gaps ${st.openGaps}` : ""}`);
     }
     await beat("indexer", { ...st }).catch(() => {});
+    // newly discovered participants are hydrated from contract views at the checkpoint block right away
+    if (st?.checkpoint && !st.catchingUp.length) {
+      const need = (await db.query("SELECT DISTINCT market_ref FROM market_participants WHERE hydrated_at IS NULL")).rows;
+      for (const r of need) { try { await reconcileMarket(db, rpc, r.market_ref, st.checkpoint); } catch (e) { console.error("[hydrate]", (e as Error).message); } }
+    }
     if (st?.checkpoint && !st.catchingUp.length && Date.now() - lastReconcile > 30_000) {
       lastReconcile = Date.now();
       const refs = (await db.query("SELECT market_ref FROM markets")).rows;

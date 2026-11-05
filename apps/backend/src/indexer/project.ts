@@ -40,8 +40,19 @@ async function notify(c: Tx, x: EventCtx, account: string | null, type: string, 
   await c.query("INSERT INTO stream_events(market_ref, account_id, type, payload) VALUES ($1,$2,$3,$4)", [x.marketRef, account, type, JSON.stringify(payload)]);
 }
 
+/**
+ * Participant discovery is independent of the snapshot boundary: every account named by ANY event (historical or not) is recorded
+ * so reconciliation can hydrate its balances from contract views. (Historical events never change balances themselves.)
+ */
+async function discover(c: Tx, x: EventCtx) {
+  const d = x.data;
+  const ids = new Set<string>([d.account_id, d.owner_id, d.maker_id, d.taker_id].filter((v): v is string => typeof v === "string"));
+  for (const id of ids) await c.query("INSERT INTO market_participants(market_ref, account_id, first_seen_height) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", [x.marketRef, id, x.height]);
+}
+
 /** Apply ONE event. Called only after the (receipt_id, log_index) insert succeeded (first time seen). */
 export async function applyEvent(c: Tx, x: EventCtx): Promise<void> {
+  await discover(c, x);
   const d = x.data, ref = x.marketRef, h = x.height, snap = x.snap;
   switch (x.event) {
     case "storage_registered":

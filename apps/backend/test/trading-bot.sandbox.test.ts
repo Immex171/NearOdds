@@ -6,10 +6,13 @@ import { TGAS, TestChain, sleep } from "./helpers/chain.js";
 import { keeperEnv } from "./helpers/keeper-env.js";
 import { setupMarket } from "./helpers/market.js";
 import { login } from "./helpers/auth.js";
-import { CrashAfter, GatedBroadcast, botDeps, cfgFor, insertBot, prepAccount, views } from "./helpers/bot-rig.js";
+import { CrashAfter, GateBeforePrepare, GatedBroadcast, botDeps, cfgFor, insertBot, prepAccount, views } from "./helpers/bot-rig.js";
 import { U } from "./helpers/bot-fixtures.js";
 import { runCycle } from "../src/trading-bot/cycle.js";
-import { BOT_JOB_KIND, botHandlers } from "../src/trading-bot/worker.js";
+import { loadBot, loadFacts, proposeOps, ProposalConflict, recoverBotSpend, runOperation } from "../src/trading-bot/ops.js";
+import { readSnapshot } from "../src/trading-bot/chain.js";
+import { decide } from "../src/trading-bot/decide.js";
+import { BOT_JOB_KIND, botHandlers, scheduleBotCycles } from "../src/trading-bot/worker.js";
 import { makeBotSigner } from "../src/trading-bot/signer.js";
 import { buildApp } from "../src/api/app.js";
 import { enqueue, runOne } from "../src/keeper/jobs.js";
@@ -45,6 +48,8 @@ describe.skipIf(!ok)("trading bot on Sandbox (real contracts)", () => {
     for (const m of [A, B]) { await chain.call(taker, token, "ft_transfer_call", { receiver_id: m.id, amount: U(30), msg: "deposit" }, 1n, 300n * TGAS); await chain.call(taker, m.id, "split_position", { market_id: "mkt-1", amount: U(20) }); }
     app = buildApp({ db: fdb.db, rpc: sbx.rpc, cfg: env.cfg });
     adminAuth = { authorization: `Bearer ${await login(app, dep)}` };
+    // the API process reports/permits execute mode only when the credentials file named by the env var exists
+    const f = join(mkdtempSync(join(tmpdir(), "botenv-")), "bot.json"); writeFileSync(f, JSON.stringify({ account_id: "x", private_key: "x" })); process.env.BOT_CREDENTIALS_FILE = f;
   });
   afterAll(async () => { await app?.close(); await sbx?.stop(); await fdb?.drop(); });
 
@@ -273,5 +278,137 @@ describe.skipIf(!ok)("trading bot on Sandbox (real contracts)", () => {
     await chain.tx.execute(`fc-${full.accountId}`, null, full, full.accountId, [actions.addFunctionCallAccessKey(fc.getPublicKey(), token, ["mint"])], "add fc key");
     expect((await mk({ BOT_CREDENTIALS_FILE: file("fc.json", { accountId: full.accountId, secret: fc.toString() }) }).status(bot(full.accountId))).status.problem).toMatch(/not full-access/);
     void KeyPairSigner;
+  });
+
+  const spyRpcFor = () => { const calls: string[] = []; return { calls, rpc: new Rpc({ url: sbx.rpcUrl, retries: 0, fetchImpl: (async (u: any, i: any) => { calls.push(JSON.parse(i.body).method); return fetch(u, i); }) as any }) }; };
+  const waitReached = async (g: { reached: boolean }) => { for (let i = 0; i < 160 && !g.reached; i++) await sleep(250); expect(g.reached).toBe(true); };
+  const api = (method: "POST" | "PUT", url: string, payload?: object) => app.inject({ method, url, headers: adminAuth, payload });
+
+  it("stop (or a config change) requested BEFORE signing: the cancelled operation is never signed or broadcast", { timeout: 300_000 }, async () => {
+    const bot = await newBot("prestop", [A], cfgFor([A.ref], { funding: { depositCollateral: U(10), splitCollateral: "0" } }), { mint: 10_000_000n });
+    const tokenBal = async () => BigInt(await sbx.rpc.callView<string>(token, "ft_balance_of", { account_id: bot.key.accountId }));
+    const journalFor = () => q("SELECT op_key FROM tx_journal WHERE op_key LIKE $1", [`bot:${bot.id}:%`]);
+    // --- 1. the worker is paused before signing (op proposed + marked submitted, nothing signed) ...
+    let spy = spyRpcFor(); const gate = new GateBeforePrepare(fdb.db, spy.rpc, 60_000, 200);
+    const cyc = runCycle({ ...botDeps({ cfg: env.cfg, rpc: spy.rpc, tx: gate }, fdb.db, [bot.key]) }, bot.id, A.ref);
+    await waitReached(gate);
+    expect((await ops(bot.id)).map((o: any) => o.state)).toEqual(["submitted"]);
+    expect(await journalFor()).toEqual([]);
+    // ... the administrator stops the bot ...
+    const stop = (await api("POST", `/v1/admin/trading-bots/${bot.id}/stop`)).json();
+    expect((await ops(bot.id)).map((o: any) => o.state)).toEqual(["cancelled"]);                  // cancelled before any signature existed
+    expect(stop.desiredState).toBe("stopped");
+    // ... and the worker resumes: it must NOT sign
+    gate.release(); await cyc;
+    expect(await journalFor()).toEqual([]);                                                       // no signed bytes
+    expect(spy.calls).not.toContain("send_tx"); expect(spy.calls).not.toContain("broadcast_tx_async"); // no broadcast
+    expect(await tokenBal()).toBe(10_000_000n);                                                   // nothing was deposited
+    expect((await ops(bot.id)).map((o: any) => o.state)).toEqual(["cancelled"]);
+    expect((await q("SELECT state FROM trading_bots WHERE id=$1", [bot.id]))[0].state).toBe("stopped");
+
+    // --- 2. same race with a configuration change instead of a stop
+    await api("POST", `/v1/admin/trading-bots/${bot.id}/start`, { mode: "execute" });
+    spy = spyRpcFor(); const gate2 = new GateBeforePrepare(fdb.db, spy.rpc, 60_000, 200);
+    const cyc2 = runCycle(botDeps({ cfg: env.cfg, rpc: spy.rpc, tx: gate2 }, fdb.db, [bot.key]), bot.id, A.ref);
+    await waitReached(gate2);
+    const firstOp = (await ops(bot.id)).find((o: any) => o.state === "submitted");
+    await api("PUT", `/v1/admin/trading-bots/${bot.id}/config`, { config: cfgFor([A.ref], { funding: { depositCollateral: U(10), splitCollateral: "0" } }) });
+    gate2.release(); await cyc2;
+    expect((await q("SELECT state FROM bot_operations WHERE op_key=$1", [firstOp.op_key]))[0].state).toBe("cancelled");   // the v1 operation was refused at the signing step
+    expect((await q("SELECT 1 FROM tx_journal WHERE op_key=$1", [firstOp.op_key])).length).toBe(0);
+  });
+
+  it("execute -> paper is refused while quotes are live; after stop + settle it is allowed and a paper bot then signs and broadcasts nothing", { timeout: 300_000 }, async () => {
+    const bot = await newBot("modebot", [A], cfgFor([A.ref], { funding: { depositCollateral: U(10), splitCollateral: "0" } }), { mint: 10_000_000n });
+    await runCycle(bot.deps, bot.id, A.ref);
+    expect((await views(sbx.rpc, A.id, bot.key.accountId))[1].length).toBe(2);                     // two live bids
+    const refused = await api("POST", `/v1/admin/trading-bots/${bot.id}/start`, { mode: "paper" });
+    expect(refused.statusCode).toBe(409); expect(refused.json().error.code).toBe("outstanding_work");
+    expect((await q("SELECT mode FROM trading_bots WHERE id=$1", [bot.id]))[0].mode).toBe("execute");
+    await api("POST", `/v1/admin/trading-bots/${bot.id}/stop`);
+    expect((await q("SELECT state FROM trading_bots WHERE id=$1", [bot.id]))[0].state).toBe("stopping");   // still has offers
+    await runCycle(bot.deps, bot.id, A.ref);                                                       // wind-down cancels them
+    expect((await views(sbx.rpc, A.id, bot.key.accountId))[1].length).toBe(0);
+    const ok = await api("POST", `/v1/admin/trading-bots/${bot.id}/start`, { mode: "paper" });
+    expect(ok.statusCode).toBe(200); expect(ok.json().state).toBe("paper");
+    const spy = spyRpcFor(); const journalBefore = (await q("SELECT COUNT(*)::int n FROM tx_journal"))[0].n;
+    class Forbidden extends TxExecutor { override async prepare(): Promise<never> { throw new Error("settled paper mode must not sign"); } }
+    const r = await runCycle(botDeps({ cfg: env.cfg, rpc: spy.rpc, tx: new Forbidden(fdb.db, spy.rpc) }, fdb.db, [bot.key]), bot.id, A.ref);
+    expect(["paper", "noop", "skipped"]).toContain(r.outcome);
+    expect((await q("SELECT COUNT(*)::int n FROM tx_journal"))[0].n).toBe(journalBefore);
+    expect(spy.calls).not.toContain("send_tx");
+  });
+
+  it("a market removed from the configuration while it has live quotes AND a transaction in flight is still reconciled and cancelled", { timeout: 360_000 }, async () => {
+    const bot = await newBot("rmbot", [A, B], cfgFor([A.ref, B.ref], { funding: { depositCollateral: U(5), splitCollateral: "0" } }), { mint: 10_000_000n });
+    await runCycle(bot.deps, bot.id, B.ref);
+    const quotesB = async () => (await views(sbx.rpc, B.id, bot.key.accountId))[1];
+    expect((await quotesB()).length).toBe(2);
+    // new reference on B => both bids are stale; the worker starts cancelling them and its first cancel is in flight (signed, unsent)
+    const repriced = cfgFor([A.ref, B.ref], { funding: { depositCollateral: U(5), splitCollateral: "0" }, reference: { yesPrice: "600000" } });
+    expect((await api("PUT", `/v1/admin/trading-bots/${bot.id}/config`, { config: repriced })).statusCode).toBe(200);
+    const gated = new GatedBroadcast(fdb.db, env.rpc, 60_000, 200);
+    const cyc = runCycle(botDeps(env.deps as any, fdb.db, [bot.key], gated), bot.id, B.ref);
+    await waitReached(gated);
+    // ... and now B is REMOVED from the configuration
+    const removed = cfgFor([A.ref], { funding: { depositCollateral: U(5), splitCollateral: "0" } });
+    expect((await api("PUT", `/v1/admin/trading-bots/${bot.id}/config`, { config: removed })).statusCode).toBe(200);
+    const st = (await app.inject({ url: `/v1/admin/trading-bots/${bot.id}`, headers: adminAuth })).json();
+    const entry = st.markets.find((m: any) => m.marketRef === B.ref);
+    expect(entry.removedFromConfig).toBe(true); expect(entry.openQuotes.length).toBe(2); expect(st.pendingOperations.length).toBeGreaterThan(0);   // visible, with its live work
+    await fdb.db.query("DELETE FROM jobs WHERE kind=$1", [BOT_JOB_KIND]);
+    await scheduleBotCycles(fdb.db, 15, Date.now() + 3_600_000);
+    expect((await q("SELECT payload->>'marketRef' m FROM jobs WHERE kind=$1 AND payload->>'botId'=$2 ORDER BY 1", [BOT_JOB_KIND, bot.id])).map((r: any) => r.m).sort()).toEqual([A.ref, B.ref].sort());   // still scheduled
+    gated.release(); await cyc;
+    await runCycle(bot.deps, bot.id, B.ref);                                                         // reconcile + finish winding down
+    expect((await quotesB()).length).toBe(0);                                                        // nothing left live on the removed market
+    expect((await ops(bot.id, "cancel_offer")).every((o: any) => o.state === "confirmed")).toBe(true);
+    expect((await q("SELECT COUNT(*)::int n FROM bot_operations WHERE bot_id=$1 AND state IN ('proposed','submitted','uncertain')", [bot.id]))[0].n).toBe(0);
+    const after = (await app.inject({ url: `/v1/admin/trading-bots/${bot.id}`, headers: adminAuth })).json();
+    expect(after.markets.map((m: any) => m.marketRef)).toEqual([A.ref]);                             // gone from status once settled
+    await fdb.db.query("DELETE FROM jobs WHERE kind=$1", [BOT_JOB_KIND]);
+    await scheduleBotCycles(fdb.db, 15, Date.now() + 7_200_000);
+    expect((await q("SELECT payload->>'marketRef' m FROM jobs WHERE kind=$1 AND payload->>'botId'=$2", [BOT_JOB_KIND, bot.id])).map((r: any) => r.m)).toEqual([A.ref]);
+  });
+
+  it("failed on-chain transactions burn gas: the fee is recorded exactly once (also after a crash) and counts against the native limit; refunded deposits are not spending", { timeout: 300_000 }, async () => {
+    const bot = await newBot("failbot", [A], cfgFor([A.ref]), { prereg: false });
+    await chain.call(bot.key, token, "storage_deposit", { account_id: bot.key.accountId, registration_only: true }, 1_250_000_000_000_000_000_000n, 30n * TGAS);
+    const mrow = (await q("SELECT market_ref, network, contract_id, internal_market_id, token_id, cutoff_ns FROM markets WHERE market_ref=$1", [A.ref]))[0];
+    const m = { market_ref: A.ref, contract_id: A.id, internal_market_id: "mkt-1", token_id: token };
+    const exec = { db: fdb.db, tx: env.deps.tx, signer: async () => bot.key };
+    const botRow = (await loadBot(fdb.db, bot.id))!;
+    const snapNow = await readSnapshot(env.rpc, mrow, bot.key.accountId);
+    // (1) an under-funded market registration fails on chain: gas is burnt, the attached deposit is refunded
+    const [reg] = await proposeOps(fdb.db, botRow, m, botRow.config_version, [{ type: "register_market", deposit: 1000n }], snapNow);
+    expect(await runOperation(exec as any, botRow, m, reg)).toBe("failed");
+    // (2) a cancel of a nonexistent offer fails on chain too (needs a registered account)
+    await chain.call(bot.key, A.id, "storage_deposit", { account_id: null, registration_only: true }, 40_960_000_000_000_000_000_000n, 30n * TGAS);
+    const [can] = await proposeOps(fdb.db, botRow, m, botRow.config_version, [{ type: "cancel", offerId: "999999", slot: "YES_BUY", reason: "test" }], snapNow);
+    expect(await runOperation(exec as any, botRow, m, can)).toBe("failed");
+    const rows = async () => q("SELECT op_id, burnt_yocto, deposit_yocto, refunded_yocto, yocto, op_outcome FROM bot_native_spend WHERE bot_id=$1 ORDER BY op_id::numeric", [bot.id]);
+    let r = await rows();
+    expect(r.length).toBe(2);
+    expect(r.every((x: any) => x.op_outcome === "failed" && BigInt(x.burnt_yocto) > 0n && x.deposit_yocto === "0")).toBe(true);   // real burnt gas, no deposit kept
+    expect(r[0].refunded_yocto).toBe("1000"); expect(r[1].refunded_yocto).toBe("0");                                            // refund tracked apart from spending
+    expect(BigInt(r[0].yocto)).toBe(BigInt(r[0].burnt_yocto));
+    const total = r.reduce((a: bigint, x: any) => a + BigInt(x.yocto), 0n);
+    // restart / crash recovery: records can be rebuilt from the journal and are never duplicated
+    expect(await recoverBotSpend(fdb.db, bot.id)).toBe(0);
+    await fdb.db.query("DELETE FROM bot_native_spend WHERE bot_id=$1", [bot.id]);                                              // "crash before the expense was recorded"
+    expect(await recoverBotSpend(fdb.db, bot.id)).toBe(2);
+    expect(await recoverBotSpend(fdb.db, bot.id)).toBe(0);
+    r = await rows(); expect(r.length).toBe(2);
+    expect(r.reduce((a: bigint, x: any) => a + BigInt(x.yocto), 0n)).toBe(total);
+    // the recorded fees affect later budget decisions
+    expect((await loadFacts(fdb.db, botRow, A.ref)).nativeSpent).toBe(total);
+    const tight = { ...botRow.config, limits: { ...botRow.config.limits, maxNativeSpendYocto: (total + 1000n).toString() } };
+    const facts = await loadFacts(fdb.db, botRow, A.ref);
+    const d = decide({ nowMs: Date.now(), snap: { ...snapNow, tokenRegistered: false }, facts: { ...facts, desired: "running" }, cfg: tight, marketRef: A.ref });
+    expect(d.reasons[0].code).toBe("native_spend_limit"); expect(d.actions).toEqual([]);
+    await fdb.db.query("UPDATE trading_bots SET config=$2 WHERE id=$1", [bot.id, JSON.stringify(tight)]);
+    const bot2 = (await loadBot(fdb.db, bot.id))!;
+    await expect(proposeOps(fdb.db, bot2, m, bot2.config_version, [{ type: "register_token", deposit: 1_250_000_000_000_000_000_000n }], snapNow)).rejects.toMatchObject({ code: "native_spend_limit" });
+    void ProposalConflict;
   });
 });

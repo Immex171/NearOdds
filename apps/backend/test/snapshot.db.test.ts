@@ -105,6 +105,66 @@ describe.skipIf(!ok)("snapshot boundaries: history never rewrites a newer snapsh
   });
 });
 
+describe.skipIf(!ok)("participant discovery is independent of the snapshot boundary", () => {
+  let fdb: Awaited<ReturnType<typeof freshDb>>;
+  beforeAll(async () => {
+    fdb = await freshDb();
+    await fdb.db.query(`INSERT INTO markets(market_ref, network, contract_id, internal_market_id, token_id, question, rules, resolution_source, cutoff_ns, resolver_id, token_meta, config, source, verified_at)
+      VALUES ('m_part','testnet',$1,'mkt-1','tok','Q','r','s','1900000000000000000','res','{"symbol":"t","decimals":6,"name":"t"}','{}','keeper', now())`, [M]);
+  });
+  afterAll(async () => { await fdb?.drop(); });
+
+  it("Alice holds collateral and shares, has no open offer, and is found only by historical backfill: her portfolio ends up equal to the contract, with no double counting", async () => {
+    // contract truth at H=100: Alice deposited 30 and split 10 BEFORE the snapshot boundary; she has no offers. Bob has an open offer.
+    const state = {
+      offers: [offerView({ offer_id: "1", owner_id: "bob.testnet", outcome: "Yes", side: "Sell", price: "600000", quantity: U(5), remaining_quantity: U(5), reserved_shares: U(5) })],
+      accounts: {
+        "alice.testnet": acct("alice.testnet", { available_collateral: U(20), yes: U(10), no: U(10) }),
+        "bob.testnet": acct("bob.testnet", { available_collateral: U(5), yes: U(0), reserved_yes: U(5), no: U(5) }),
+      } as Record<string, any>,
+    };
+    const rpc = fakeViewsRpc(state);
+    await reconcileMarket(fdb.db, rpc, "m_part", 100);                          // import-time snapshot: only Bob is discoverable (open offer)
+    const accounts = async () => (await fdb.db.query("SELECT account_id, available_collateral a, yes, no FROM account_state WHERE market_ref='m_part' ORDER BY account_id")).rows;
+    expect((await accounts()).map((x: any) => x.account_id)).toEqual(["bob.testnet"]);          // Alice is invisible: her portfolio would look empty
+
+    const idx = new Indexer(fdb.db, fakeNeardata(new Map(), () => 0), {});
+    const history: NdBlock[] = [
+      block(80, [ev("storage_registered", { account_id: "alice.testnet", payer_id: "alice.testnet", storage_deposit_yocto: "1" })]),
+      block(82, [ev("deposit", { account_id: "alice.testnet", token_id: "t", amount: U(30) })]),
+      block(85, [ev("split", { account_id: "alice.testnet", market_id: "mkt-1", amount: U(10) })]),
+    ];
+    expect(await idx.processBlocks(history)).toBe(3);
+    // discovered through history, but history must not move any balance
+    expect((await fdb.db.query("SELECT account_id, hydrated_at FROM market_participants WHERE market_ref='m_part' AND account_id='alice.testnet'")).rows).toEqual([{ account_id: "alice.testnet", hydrated_at: null }]);
+    expect((await accounts()).map((x: any) => x.account_id)).toEqual(["bob.testnet"]);
+    expect((await fdb.db.query("SELECT COUNT(*)::int n FROM chain_events WHERE market_ref='m_part'")).rows[0].n).toBe(3);
+    // hydrate at a consistent block: the contract's numbers, exactly
+    const rep = await reconcileMarket(fdb.db, rpc, "m_part", 100);
+    expect(rep.skipped).toBeUndefined();
+    expect(await accounts()).toEqual([{ account_id: "alice.testnet", a: U(20), yes: U(10), no: U(10) }, { account_id: "bob.testnet", a: U(5), yes: "0", no: U(5) }]);
+    expect((await fdb.db.query("SELECT hydrated_at IS NOT NULL h FROM market_participants WHERE market_ref='m_part' AND account_id='alice.testnet'")).rows[0].h).toBe(true);
+    // replaying the same history changes nothing (no double counting)
+    expect(await idx.processBlocks(history)).toBe(0);
+    expect((await accounts()).find((x: any) => x.account_id === "alice.testnet")).toEqual({ account_id: "alice.testnet", a: U(20), yes: U(10), no: U(10) });
+    // a LATER event is applied exactly once on top of the hydrated balance
+    const later: NdBlock[] = [block(110, [ev("merge", { account_id: "alice.testnet", market_id: "mkt-1", amount: U(4) })])];
+    expect(await idx.processBlocks(later)).toBe(1); expect(await idx.processBlocks(later)).toBe(0);
+    expect((await accounts()).find((x: any) => x.account_id === "alice.testnet")).toEqual({ account_id: "alice.testnet", a: U(24), yes: U(6), no: U(6) });
+    // the API says so while she was not yet hydrated
+    state.accounts["carol.testnet"] = acct("carol.testnet", { available_collateral: U(3) });
+    await idx.processBlocks([block(90, [ev("deposit", { account_id: "carol.testnet", token_id: "t", amount: U(3) })])]);
+    const { buildApp } = await import("../src/api/app.js"); const { loadConfig } = await import("../src/config/index.js");
+    const app = buildApp({ db: fdb.db, rpc, cfg: loadConfig({ DATABASE_URL: "x" } as any) });
+    const pf = (await app.inject("/v1/accounts/carol.testnet/portfolio")).json();
+    expect(pf.pendingHydration).toEqual(["m_part"]); expect(pf.markets).toEqual([]);
+    await reconcileMarket(fdb.db, rpc, "m_part", 110);
+    const pf2 = (await app.inject("/v1/accounts/carol.testnet/portfolio")).json();
+    expect(pf2.pendingHydration).toEqual([]); expect(pf2.markets[0].collateral.available).toBe(U(3));
+    await app.close();
+  });
+});
+
 describe.skipIf(!ok)("history gaps: proven skips vs unavailable provider data", () => {
   let fdb: Awaited<ReturnType<typeof freshDb>>;
   const mkMarket = (ref: string, contract: string) => fdb.db.query(`INSERT INTO markets(market_ref, network, contract_id, internal_market_id, token_id, question, rules, resolution_source, cutoff_ns, resolver_id, token_meta, config, source, verified_at, history_start_height)

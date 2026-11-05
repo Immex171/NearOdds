@@ -16,9 +16,9 @@ export function deriveState(bot: Pick<BotRow, "desired_state" | "mode">, f: Stat
     return { state: d, reason: null };
   }
   if (bot.mode === "paper") return { state: "paper", reason: "paper mode: no transactions are signed or sent" };
+  if (f.uncertainOps > 0) return { state: "uncertain", reason: `${f.uncertainOps} transaction(s) have an unknown outcome` };   // more urgent than setup problems
   if (!f.executionAllowed) return { state: "setup_required", reason: "execution is not enabled for this environment" };
   if (!f.credentialsOk) return { state: "setup_required", reason: "bot credentials are missing or invalid" };
-  if (f.uncertainOps > 0) return { state: "uncertain", reason: `${f.uncertainOps} transaction(s) have an unknown outcome` };
   if (f.needsFunding) return { state: "needs_funding", reason: "insufficient funds for the configured quotes" };
   return { state: "running", reason: null };
 }

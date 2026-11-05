@@ -13,8 +13,11 @@ export function registerAccountRoutes(app: FastifyInstance, { db }: Ctx) {
     const st = (await db.query("SELECT s.*, m.contract_id, m.internal_market_id, m.question, m.token_meta, m.contract_status, m.cutoff_ns, m.resolution FROM account_state s JOIN markets m USING (market_ref) WHERE s.account_id=$1 ORDER BY m.created_at", [a])).rows;
     const offers = (await db.query("SELECT * FROM offers WHERE owner_id=$1 AND state='open' ORDER BY market_ref, offer_id", [a])).rows;
     const wd = (await db.query("SELECT * FROM withdrawals WHERE account_id=$1 ORDER BY requested_ns DESC", [a])).rows;
+    // markets where this account was seen in events but its balances have not been read from the contract yet
+    const pending = (await db.query("SELECT market_ref FROM market_participants WHERE account_id=$1 AND hydrated_at IS NULL", [a])).rows.map((r: any) => r.market_ref);
     return {
       accountId: a,
+      pendingHydration: pending,
       markets: st.map((s: any) => ({
         marketRef: s.market_ref, contract: { contractId: s.contract_id, marketId: s.internal_market_id }, question: s.question, status: s.contract_status, registered: s.registered,
         token: { symbol: s.token_meta.symbol, decimals: s.token_meta.decimals },

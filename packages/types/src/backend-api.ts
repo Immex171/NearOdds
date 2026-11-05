@@ -73,7 +73,7 @@ export interface ApiPortfolioMarket {
   redeemed: boolean; lastReconciledHeight: number | null; driftNote: string[] | null; redeemHint: string | null;
 }
 export interface ApiOpenOffer { marketRef: string; offerId: string; offerRef: string; outcome: Outcome; side: "Buy" | "Sell"; price: string; remainingQuantity: string; originalQuantity: string; expiresAtNs: string | null; state: string }
-export interface ApiPortfolio { accountId: string; markets: ApiPortfolioMarket[]; openOffers: ApiOpenOffer[]; withdrawals: ApiWithdrawal[]; freshness: ApiFreshness }
+export interface ApiPortfolio { accountId: string; /** markets where the account was discovered but balances are not yet read from the contract: treat the portfolio as incomplete for them */ pendingHydration: string[]; markets: ApiPortfolioMarket[]; openOffers: ApiOpenOffer[]; withdrawals: ApiWithdrawal[]; freshness: ApiFreshness }
 
 export interface ApiAuthChallenge { accountId: string; message: string; recipient: string; /** base64, 32 bytes: pass to wallet signMessage as nonce */ nonce: string; nonceHex: string; expiresAt: string }
 export interface ApiAuthVerifyRequest { accountId: string; publicKey: string; /** base64 */ signature: string; /** the challenge nonce, base64 */ nonce: string }
@@ -112,7 +112,9 @@ export interface ApiBotReference { yesPrice: string; noPrice: string; label: str
 export interface ApiBotReason { code: string; message: string; slot?: ApiBotSlot }
 export interface ApiBotQuote { offerId: string; offerRef: string; slot: ApiBotSlot; price: string; quantity: string; remaining: string; expiresAtNs: string | null; origin: "created" | "adopted" }
 export interface ApiBotMarketStatus {
-  marketRef: string; enabled: boolean; question: string | null;
+  marketRef: string; enabled: boolean;
+  /** true when the market was removed from the configuration but still has live quotes / unresolved operations (cancel-only) */
+  removedFromConfig: boolean; question: string | null;
   /** wallet/contract identity: offers and balances are scoped to this contract */
   contract: { contractId: string; marketId: string; tokenId: string } | null;
   reference: ApiBotReference | null;

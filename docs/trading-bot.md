@@ -62,7 +62,18 @@ Every cycle reads **one coherent finalized block** (config, market, account, off
 * One owner per bot/market: a job lease plus a session advisory lock; a second worker defers.
 
 ## Pause and stop
+**Signing guard.** The transition into durable signing is a guarded database transaction: it takes a SHARE lock on the bot row and an exclusive lock on the operation, and refuses unless the operation is still pending, the bot is in `execute` mode, and (for anything that adds exposure) it is `running` on the same configuration version. Stop, pause, configuration and mode changes take the same bot row exclusively, so they serialise with it. A cancelled operation therefore can never be signed; one that passed the guard is already persisted and is only reconciled.
+
 `POST .../pause|stop` immediately sets the desired state (persisted), cancels operations that were proposed but never signed, and refuses new proposals. Signed operations are reconciled; the worker then cancels the bot's open offers (they can still be filled until the cancellation is effective). State is **`pausing`/`stopping` until nothing is unresolved**, `uncertain` if an outcome is unknown. Stop quoting also happens automatically `cutoffBufferSeconds` before the cutoff; after the cutoff or resolution the worker keeps reconciling and cancelling and reports retained shares.
+
+## Mode changes and removed markets
+* **Execute → paper** is refused (`409 outstanding_work`) while the bot has live quotes or unresolved operations. Stop the bot, wait for `stopped`, then start it in paper mode. A settled paper bot never signs or broadcasts.
+* **Removing a market** from the configuration does not abandon its offers: markets that still have live quotes or unresolved operations keep being scheduled and stay visible in status (`removedFromConfig: true`) as cancellation/reconciliation-only until everything is settled; then they disappear.
+
+## Limits through the whole lifecycle
+* A split adds equal YES and NO. Its size is cut to what keeps `owned (available + reserved) + open buys + split` within both `maxYesInventory` and `maxNoInventory`, for the first tranche and every later one; if nothing fits, no split happens (reason `split_blocked_by_inventory_limit`) and the bot keeps quoting with what it holds.
+* If `maxActiveOffersPerMarket` is lowered below the number of valid quotes, the bot keeps the offers with the largest remaining size (ties: slot order YES_BUY, YES_SELL, NO_BUY, NO_SELL, then lowest offer id) and cancels the rest (`active_offer_limit`); released assets are reused only after the cancellations are confirmed.
+* Native spending counts **actual gas burnt by failed transactions too**, from the transaction journal's final outcome, exactly once per operation (recovered after crashes). Attached deposits kept by successful registrations are counted; deposits refunded by a failed transaction are recorded separately (`refunded_yocto`) and are not spending.
 
 ## Operating states
 `disabled`, `paper`, `running`, `pausing`, `paused`, `stopping`, `stopped`, `uncertain`, `needs_funding`, `setup_required`.

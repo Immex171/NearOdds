@@ -14,6 +14,13 @@ export class TxUncertainError extends Error {
 export class TxBlockedError extends Error {
   constructor(readonly opKey: string, readonly waitingFor: string[]) { super(`tx ${opKey} waits for earlier transactions of the same key: ${waitingFor.join(", ")}`); this.name = "TxBlockedError"; }
 }
+/** The signing guard said no (e.g. the owner stopped the bot): nothing was signed. */
+export class SigningRefusedError extends Error {
+  constructor(readonly opKey: string) { super(`signing of ${opKey} was refused by its guard`); this.name = "SigningRefusedError"; }
+}
+/** Runs INSIDE the database transaction that persists the signed bytes; return false to refuse signing. */
+export type SigningGuard = (c: import("../db/index.js").Tx) => Promise<boolean>;
+
 export class TxFailedError extends Error {
   constructor(readonly opKey: string, readonly txHash: string, readonly failure: string) { super(`tx ${txHash} failed: ${failure}`); this.name = "TxFailedError"; }
 }
@@ -46,7 +53,7 @@ export class TxExecutor {
   }
 
   /** Sign + persist (no network write). Idempotent per opKey. */
-  async prepare(opKey: string, jobId: string | null, key: SigningKey, receiverId: string, actions: Action[], description: string): Promise<JournalRow> {
+  async prepare(opKey: string, jobId: string | null, key: SigningKey, receiverId: string, actions: Action[], description: string, guard?: SigningGuard): Promise<JournalRow> {
     const existing = await this.getJournal(opKey);
     if (existing) return existing;
     // reads first (may throw RpcUnavailable: nothing signed yet, safe to retry the whole prepare)
@@ -55,6 +62,8 @@ export class TxExecutor {
     return withTx(this.db, async (c) => {
       const again = await c.query("SELECT * FROM tx_journal WHERE op_key=$1", [opKey]);
       if (again.rowCount) return again.rows[0];
+      // Guarded transition into durable signing: evaluated under locks, in the same transaction that stores the signature.
+      if (guard && !(await guard(c))) throw new SigningRefusedError(opKey);
       await c.query("INSERT INTO signer_nonces(signer_id, public_key) VALUES ($1,$2) ON CONFLICT DO NOTHING", [key.accountId, key.publicKey]);
       const n = await c.query("SELECT last_nonce FROM signer_nonces WHERE signer_id=$1 AND public_key=$2 FOR UPDATE", [key.accountId, key.publicKey]);
       const last = BigInt(n.rows[0].last_nonce);
@@ -127,8 +136,8 @@ export class TxExecutor {
    * Drive an operation to a verdict. Throws TxUncertainError when the outcome cannot be established
    * (state `uncertain`; call again later to resume with the same signed tx) and TxFailedError on a chain failure.
    */
-  async execute(opKey: string, jobId: string | null, key: SigningKey, receiverId: string, actions: Action[], description: string): Promise<any> {
-    let row = await this.prepare(opKey, jobId, key, receiverId, actions, description);
+  async execute(opKey: string, jobId: string | null, key: SigningKey, receiverId: string, actions: Action[], description: string, guard?: SigningGuard): Promise<any> {
+    let row = await this.prepare(opKey, jobId, key, receiverId, actions, description, guard);
     if (row.state === "succeeded") return row.outcome;
     if (row.state === "failed") throw new TxFailedError(opKey, row.tx_hash, row.failure ?? "failed");
     // prepared / broadcast / uncertain: first see if the chain already knows it (do not rebroadcast blindly)

@@ -123,6 +123,56 @@ describe.skipIf(!ok)("trading bot: admin API, state, job isolation, capacity res
     await fdb.db.query("DELETE FROM bot_quotes WHERE bot_id=$1", [bot.id]);
   });
 
+  it("execute -> paper is refused while quotes or unresolved operations are live; allowed once settled; paper bots never get proposals", async () => {
+    const cfgx = { ...loadConfig({ DATABASE_URL: "x", NEAR_NETWORK: "testnet", ADMIN_ACCOUNTS: "admin.testnet", BOT_EXECUTION_ENABLED: "true", CORS_ORIGINS: FRONTEND, DEPLOYER_ACCOUNT: "deployer.testnet", RESOLVER_ACCOUNT: "deployer.testnet", TOKEN_OWNER_ACCOUNT: "deployer.testnet" } as any) };
+    const app2 = buildApp({ db: fdb.db, rpc: new Rpc({ url: "http://127.0.0.1:1", retries: 0, timeoutMs: 300 }), cfg: cfgx });
+    const f = await fdb.db.query("INSERT INTO trading_bots(slug, account_id, network, config, created_by, desired_state, mode, credentials_env) VALUES ('mm-mode','mm4.testnet','testnet',$1,'t','running','execute','BOT_MODE_CREDS') RETURNING id", [JSON.stringify(botConfig({}, "m_a"))]);
+    const bid = f.rows[0].id;
+    await fdb.db.query("INSERT INTO bot_quotes(bot_id, market_ref, offer_id, slot, price, quantity, remaining, origin, state) VALUES ($1,'m_a',5,'YES_BUY',450000,1,1,'created','active')", [bid]);
+    const startPaper = () => app2.inject({ method: "POST", url: `/v1/admin/trading-bots/${bid}/start`, headers: H(), payload: { mode: "paper" } });
+    let r = await startPaper();
+    expect(r.statusCode).toBe(409); expect(r.json().error.code).toBe("outstanding_work"); expect(r.json().error.details.quotes).toBe(1);
+    expect((await fdb.db.query("SELECT mode FROM trading_bots WHERE id=$1", [bid])).rows[0].mode).toBe("execute");          // unchanged
+    await fdb.db.query("UPDATE bot_quotes SET state='cancelled' WHERE bot_id=$1", [bid]);
+    await fdb.db.query("INSERT INTO bot_operations(bot_id, market_ref, config_version, kind, op_key, params, state) VALUES ($1,'m_a',1,'create_offer','k-live','{}','submitted')", [bid]);
+    r = await startPaper(); expect(r.statusCode).toBe(409); expect(r.json().error.details.ops).toBe(1);
+    await fdb.db.query("UPDATE bot_operations SET state='confirmed' WHERE bot_id=$1", [bid]);
+    r = await startPaper(); expect(r.statusCode).toBe(200); expect(r.json().mode).toBe("paper");
+    const bot = (await loadBot(fdb.db, bid))!;
+    await expect(proposeOps(fdb.db, bot, { market_ref: "m_a", contract_id: "mkt-a.testnet", internal_market_id: "mkt-1", token_id: "tok.testnet" }, bot.config_version, [{ type: "cancel", offerId: "1", slot: "YES_BUY", reason: "x" }], snap())).rejects.toMatchObject({ code: "not_execute_mode" });
+    await app2.close();
+  });
+
+  it("markets removed from the configuration keep being scheduled and stay visible until their live work is gone", async () => {
+    const cfg2 = botConfig({}, "m_a");                                     // m_b is NOT configured
+    const ins = await fdb.db.query("INSERT INTO trading_bots(slug, account_id, network, config, created_by, desired_state, mode) VALUES ('mm-removed','mm5.testnet','testnet',$1,'t','running','execute') RETURNING id", [JSON.stringify(cfg2)]);
+    const bid = ins.rows[0].id;
+    await fdb.db.query("DELETE FROM jobs WHERE kind=$1", [BOT_JOB_KIND]);
+    const queuedRefs = async () => (await fdb.db.query("SELECT payload->>'marketRef' m FROM jobs WHERE kind=$1 AND payload->>'botId'=$2 AND state='queued' ORDER BY 1", [BOT_JOB_KIND, String(bid)])).rows.map((r: any) => r.m);
+    await scheduleBotCycles(fdb.db, 15, Date.now() + 5 * 60_000);
+    expect(await queuedRefs()).toEqual(["m_a"]);
+    // live quote on the removed market
+    await fdb.db.query("INSERT INTO bot_quotes(bot_id, market_ref, offer_id, slot, price, quantity, remaining, origin, state) VALUES ($1,'m_b',9,'NO_BUY',450000,1,1,'created','active')", [bid]);
+    await fdb.db.query("UPDATE jobs SET state='succeeded' WHERE kind=$1", [BOT_JOB_KIND]);
+    await scheduleBotCycles(fdb.db, 15, Date.now() + 10 * 60_000);
+    expect(await queuedRefs()).toEqual(["m_a", "m_b"]);
+    // ... and an unresolved operation alone is enough
+    await fdb.db.query("UPDATE bot_quotes SET state='cancelled' WHERE bot_id=$1", [bid]);
+    await fdb.db.query("INSERT INTO bot_operations(bot_id, market_ref, config_version, kind, op_key, params, state) VALUES ($1,'m_b',1,'cancel_offer','k-removed','{}','uncertain')", [bid]);
+    await fdb.db.query("UPDATE jobs SET state='succeeded' WHERE kind=$1", [BOT_JOB_KIND]);
+    await scheduleBotCycles(fdb.db, 15, Date.now() + 15 * 60_000);
+    expect(await queuedRefs()).toEqual(["m_a", "m_b"]);
+    const st = (await app.inject({ url: `/v1/admin/trading-bots/${bid}`, headers: H() })).json();
+    expect(st.markets.map((m: any) => [m.marketRef, m.removedFromConfig])).toEqual([["m_a", false], ["m_b", true]]);
+    expect(st.pendingOperations.length).toBe(1); expect(st.state).toBe("uncertain");
+    // once everything is settled the removed market disappears from status and from the schedule
+    await fdb.db.query("UPDATE bot_operations SET state='confirmed' WHERE bot_id=$1", [bid]);
+    await fdb.db.query("UPDATE jobs SET state='succeeded' WHERE kind=$1", [BOT_JOB_KIND]);
+    await scheduleBotCycles(fdb.db, 15, Date.now() + 20 * 60_000);
+    expect(await queuedRefs()).toEqual(["m_a"]);
+    expect((await app.inject({ url: `/v1/admin/trading-bots/${bid}`, headers: H() })).json().markets.map((m: any) => m.marketRef)).toEqual(["m_a"]);
+  });
+
   it("history endpoints respond (orders, fills, decisions, operations)", async () => {
     for (const p of ["orders", "fills", "decisions", "operations"]) {
       const r = await app.inject({ url: `/v1/admin/trading-bots/${id}/${p}`, headers: H() });
@@ -131,6 +181,7 @@ describe.skipIf(!ok)("trading bot: admin API, state, job isolation, capacity res
   });
 
   it("keeper and trading-bot workers claim ONLY their own job kinds", async () => {
+    await fdb.db.query("DELETE FROM jobs");
     const keeperKinds = Object.keys(handlersFor({} as any));
     expect(keeperKinds).not.toContain(BOT_JOB_KIND);
     const ran: string[] = [];
@@ -147,6 +198,8 @@ describe.skipIf(!ok)("trading bot: admin API, state, job isolation, capacity res
   });
 
   it("scheduler enqueues one cycle job per bot/market and not while one is active; settled stopped bots are skipped", async () => {
+    await fdb.db.query("DELETE FROM jobs");
+    await fdb.db.query("UPDATE trading_bots SET desired_state='disabled' WHERE id <> $1", [id]);          // only this bot takes part
     await app.inject({ method: "POST", url: `/v1/admin/trading-bots/${id}/start`, headers: H(), payload: { mode: "paper" } });
     expect(await scheduleBotCycles(fdb.db, 15)).toBe(1);
     expect(await scheduleBotCycles(fdb.db, 15, Date.now() + 60_000)).toBe(0);      // previous still queued

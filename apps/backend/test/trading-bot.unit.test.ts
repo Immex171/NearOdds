@@ -210,3 +210,67 @@ describe("operating state and config", () => {
     expect(BotConfig.safeParse(bad).success).toBe(false);
   });
 });
+
+describe("lifecycle limits: splits vs inventory limits, shrinking the active-offer cap, removed markets", () => {
+  const funded = { trancheDone: { deposit: true, split: false } };
+  const lim = (o: Record<string, any>) => botConfig({ limits: { ...botConfig().limits, ...o } });
+  const splitOf = (d: ReturnType<typeof decide>) => d.actions.find((a: any) => a.type === "split") as any;
+
+  it("deposit 20 + split 10 with max YES/NO inventory 5: the split is cut to 5 (never 10 YES + 10 NO)", () => {
+    const d = run({ f: funded, c: lim({ maxYesInventory: U(5), maxNoInventory: U(5) }), s: { account: acct({ available_collateral: U(20) }) } });
+    expect(splitOf(d).amount).toBe(5_000_000n);
+    expect(d.reasons.some((r) => r.code === "split_reduced")).toBe(true);
+  });
+  it("counts shares the account already holds (available + reserved) and open buys that may still acquire shares", () => {
+    const base = { f: funded, c: lim({ maxYesInventory: U(5), maxNoInventory: U(5) }) };
+    // holds 3 YES (2 available + 1 reserved) and 3 NO => headroom 2
+    const holds = run({ ...base, s: { account: acct({ available_collateral: U(20), yes: U(2), reserved_yes: U(1), no: U(3) }), offers: [offer({ offer_id: "1", outcome: "Yes", side: "Sell", price: "550000", remaining_quantity: U(1), reserved_shares: U(1) })] } });
+    expect(splitOf(holds).amount).toBe(2_000_000n);
+    // holds nothing, but an open YES bid for 3 may acquire 3 more YES => headroom 2
+    const buy = offer({ offer_id: "2", outcome: "Yes", side: "Buy", price: "450000", remaining_quantity: U(3), reserved_collateral: U(1.35) });
+    const bid = run({ ...base, s: { account: acct({ available_collateral: U(20), reserved_collateral: U(1.35) }), offers: [buy] } });
+    expect(splitOf(bid).amount).toBe(2_000_000n);
+  });
+  it("already at/over the limit: no split at all, the bot keeps quoting with what it holds, reason recorded", () => {
+    const d = run({ f: funded, c: lim({ maxYesInventory: U(5), maxNoInventory: U(5) }), s: { account: acct({ available_collateral: U(20), yes: U(6), no: U(6) }) } });
+    expect(splitOf(d)).toBeUndefined();
+    expect(d.reasons.some((r) => r.code === "split_blocked_by_inventory_limit")).toBe(true);
+    expect(d.actions.some((a: any) => a.type === "create" && a.side === "Sell")).toBe(true);        // sells quoted from the 6 held shares
+  });
+  it("later funding tranches obey the same limits (tranche 2 with existing inventory)", () => {
+    const c = botConfig({ funding: { trancheId: 2, depositCollateral: U(20), splitCollateral: U(10) }, limits: { ...botConfig().limits, maxYesInventory: U(12), maxNoInventory: U(12) } });
+    const d = run({ f: funded, c, s: { account: acct({ available_collateral: U(20), yes: U(8), no: U(8) }) } });
+    expect(splitOf(d).amount).toBe(4_000_000n);                                                      // 12 - 8
+  });
+  it("a split within the limits is unchanged", () => { expect(splitOf(run({ f: funded, s: { account: acct({ available_collateral: U(20) }) } })).amount).toBe(10_000_000n); });
+
+  it("reducing maxActiveOffersPerMarket cancels the excess deterministically (largest remaining kept, then slot order, then lowest id)", () => {
+    const exp = (BigInt(NOW + 3_000_000) * 1_000_000n).toString();
+    const q = (id: string, o: "Yes" | "No", sd: "Buy" | "Sell", p: string, rem: number) => offer({ offer_id: id, outcome: o, side: sd, price: p, quantity: U(10), remaining_quantity: U(rem), expires_at_ns: exp, reserved_collateral: sd === "Buy" ? U(rem * 0.45) : "0", reserved_shares: sd === "Sell" ? U(rem) : "0" });
+    const offers = [q("1", "Yes", "Buy", "450000", 6), q("2", "Yes", "Sell", "550000", 10), q("3", "No", "Buy", "450000", 10), q("4", "No", "Sell", "550000", 10)];
+    const st = { account: acct({ available_collateral: U(1), reserved_collateral: U(9), reserved_yes: U(10), reserved_no: U(10) }), offers };
+    const four = run({ s: st }); expect(four.actions).toEqual([]);                                   // 4 valid quotes under the default cap of 4
+    const d = run({ c: lim({ maxActiveOffersPerMarket: 2 }), s: st });
+    const cancelled = d.actions.map((a: any) => a.offerId).sort();
+    expect(d.actions.every((a: any) => a.type === "cancel" && a.reason === "active_offer_limit")).toBe(true);
+    expect(cancelled).toEqual(["1", "4"]);                                                            // kept: #2 (YES_SELL) and #3 (NO_BUY): both 10, earlier slot wins over NO_SELL; #1 is smaller (6)
+    // same input => same answer
+    expect(run({ c: lim({ maxActiveOffersPerMarket: 2 }), s: st }).actions).toEqual(d.actions);
+    // after the cancellations are confirmed and the chain re-read: nothing more to cancel, and no new quote is created above the cap
+    const after = run({ c: lim({ maxActiveOffersPerMarket: 2 }), s: { account: acct({ available_collateral: U(5.6), reserved_collateral: U(4.5), reserved_yes: U(10), yes: "0", no: U(10) }), offers: [offers[1], offers[2]] } });
+    expect(after.actions).toEqual([]);
+    expect(after.reasons.some((r) => r.code === "active_offer_limit")).toBe(true);
+  });
+
+  it("a market removed from the configuration is cancellation-only (not a silent early return)", () => {
+    const other = botConfig({}, "m_other");
+    const o = offer({ offer_id: "1", outcome: "Yes", side: "Sell", price: "550000", reserved_shares: U(5), remaining_quantity: U(5) });
+    const withLive = decide({ nowMs: NOW, snap: snap({ account: acct({ yes: "0", reserved_yes: U(5) }), offers: [o] }), facts: facts(), cfg: other, marketRef: "m_test" });
+    expect(withLive.reasons[0].code).toBe("market_removed"); expect(withLive.outcome).toBe("wind_down");
+    expect(withLive.actions).toEqual([expect.objectContaining({ type: "cancel", offerId: "1", reason: "market_removed" })]);
+    const clean = decide({ nowMs: NOW, snap: snap(), facts: facts(), cfg: other, marketRef: "m_test" });
+    expect(clean.actions).toEqual([]);                                                                  // nothing left: nothing to do
+    const pending = decide({ nowMs: NOW, snap: snap(), facts: facts({ hasPendingOps: true }), cfg: other, marketRef: "m_test" });
+    expect(pending.reasons.map((r) => r.code)).toContain("operations_in_flight");                      // in-flight work is reconciled first
+  });
+});

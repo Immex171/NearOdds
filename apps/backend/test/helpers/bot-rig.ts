@@ -33,8 +33,8 @@ export class GatedBroadcast extends TxExecutor {
 export class CrashAfter extends TxExecutor {
   crashed = false;
   constructor(db: Db, rpc: any, private match: RegExp) { super(db, rpc, 60_000, 300); }
-  override async execute(op: string, job: string | null, k: any, r: string, a: any, d: string) {
-    const out = await super.execute(op, job, k, r, a, d);
+  override async execute(op: string, job: string | null, k: any, r: string, a: any, d: string, g?: any) {
+    const out = await super.execute(op, job, k, r, a, d, g);
     if (this.match.test(op) && !this.crashed) { this.crashed = true; throw new Error("simulated crash after on-chain success"); }
     return out;
   }
@@ -48,3 +48,13 @@ export async function prepAccount(chain: TestChain, owner: SigningKey, key: Sign
 }
 export const views = (rpc: any, contract: string, account: string) => Promise.all([rpc.callView(contract, "get_account", { account_id: account }), rpc.callView(contract, "get_account_offers", { account_id: account })]) as Promise<[any, any[]]>;
 export { actions };
+
+/** Pauses a worker right BEFORE the signing step (before the guarded transition) until released. */
+export class GateBeforePrepare extends TxExecutor {
+  private open!: () => void; private opened = new Promise<void>((r) => (this.open = r)); armed = true; reached = false;
+  release() { this.open(); }
+  override async prepare(opKey: string, jobId: string | null, key: any, receiverId: string, acts: any[], description: string, guard?: any) {
+    if (this.armed && !(await this.getJournal(opKey))) { this.armed = false; this.reached = true; await this.opened; }
+    return super.prepare(opKey, jobId, key, receiverId, acts, description, guard);
+  }
+}

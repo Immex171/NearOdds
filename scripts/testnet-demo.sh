@@ -8,13 +8,17 @@
 #   NEARODDS_DEMO_MINT="alice.testnet:100,bob.testnet:50" \   # optional test-token recipients
 #     bash scripts/testnet-demo.sh
 #
-# Funding: 4+5+3 = 12 NEAR plus a 3 NEAR fee margin (checked first). The parent
+# Funding: 3+4+2 = 9 NEAR plus a 2 NEAR fee margin (checked first). The parent
 # is the token owner and the market resolver; resolve later with
 # `resolve_market` signed by the parent after the cutoff.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${NEARODDS_TESTNET_PARENT:?set NEARODDS_TESTNET_PARENT to a funded testnet account id}"
-: "${NEARODDS_TESTNET_PARENT_KEY:?set NEARODDS_TESTNET_PARENT_KEY to its ed25519 full-access secret key}"
+# The key comes from NEARODDS_TESTNET_PARENT_KEY or, if unset, from
+# ~/.near-credentials/testnet/$NEARODDS_TESTNET_PARENT.json (mode 600). Never from the repo.
+if [ -z "${NEARODDS_TESTNET_PARENT_KEY:-}" ] && [ ! -f "$HOME/.near-credentials/testnet/$NEARODDS_TESTNET_PARENT.json" ]; then
+  echo "no NEARODDS_TESTNET_PARENT_KEY and no ~/.near-credentials/testnet/$NEARODDS_TESTNET_PARENT.json" >&2; exit 1
+fi
 bash scripts/build-wasm.sh
 NEARODDS_SKIP_WASM_BUILD=1 cargo test -p nearodds-market --test testnet_smoke demo_on_testnet -- --ignored --nocapture
 echo "Facts written to deployments/testnet-demo.json"

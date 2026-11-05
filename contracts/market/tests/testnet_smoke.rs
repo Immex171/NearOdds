@@ -24,17 +24,19 @@ use near_workspaces::{Account, Contract, Network, Worker};
 use serde_json::{json, Value};
 use std::process::Command;
 
-/// NEAR given to each created account (kept in sync with docs/testnet.md).
-const SMOKE_FUNDING_NEAR: [(&str, u128); 5] = [
-    ("token", 4),
-    ("market", 5),
-    ("alice", 2),
-    ("bob", 2),
-    ("carol", 2),
+/// milliNEAR given to each created account (kept in sync with docs/testnet.md).
+/// Sized for a single 10 NEAR faucet account: the smoke accounts are deleted
+/// afterwards and their NEAR returned, so smoke then demo fit in the same parent.
+const SMOKE_FUNDING_MILLI: [(&str, u128); 5] = [
+    ("token", 2000),
+    ("market", 3000),
+    ("alice", 500),
+    ("bob", 500),
+    ("carol", 500),
 ];
-const DEMO_FUNDING_NEAR: [(&str, u128); 3] = [("token", 4), ("market", 5), ("lp", 3)];
-/// Spare NEAR the parent must keep for transaction fees.
-const FEE_MARGIN_NEAR: u128 = 3;
+const DEMO_FUNDING_MILLI: [(&str, u128); 3] = [("token", 2000), ("market", 3000), ("lp", 1500)];
+/// Spare milliNEAR the parent must keep for transaction fees.
+const FEE_MARGIN_MILLI: u128 = 1000;
 
 struct Recorder {
     steps: Vec<Value>,
@@ -54,8 +56,8 @@ impl Recorder {
     }
 }
 
-fn required_near(table: &[(&str, u128)]) -> u128 {
-    table.iter().map(|(_, n)| n).sum::<u128>() + FEE_MARGIN_NEAR
+fn required_milli(table: &[(&str, u128)]) -> u128 {
+    table.iter().map(|(_, n)| n).sum::<u128>() + FEE_MARGIN_MILLI
 }
 
 /// Fails early with a clear message if the parent cannot fund the run.
@@ -64,7 +66,7 @@ async fn check_funding<T: Network + 'static>(
     parent: &Account,
     table: &[(&str, u128)],
 ) {
-    let need = NearToken::from_near(required_near(table));
+    let need = NearToken::from_millinear(required_milli(table));
     let have = worker.view_account(parent.id()).await.unwrap().balance;
     println!(
         "funding check: parent {} has {have}, needs {need}",
@@ -72,16 +74,16 @@ async fn check_funding<T: Network + 'static>(
     );
     assert!(
         have >= need,
-        "parent account {} holds {have} but this run needs {need} ({:?} + {FEE_MARGIN_NEAR} NEAR fee margin)",
+        "parent account {} holds {have} but this run needs {need} ({:?} milliNEAR + {FEE_MARGIN_MILLI} milliNEAR fee margin)",
         parent.id(),
         table
     );
 }
 
-async fn user(parent: &Account, name: &str, near: u128) -> Account {
+async fn user(parent: &Account, name: &str, milli: u128) -> Account {
     parent
         .create_subaccount(name)
-        .initial_balance(NearToken::from_near(near))
+        .initial_balance(NearToken::from_millinear(milli))
         .transact()
         .await
         .unwrap()
@@ -339,8 +341,10 @@ async fn run_smoke<T: Network + 'static>(
     parent: &Account,
     tag: &str,
     cutoff_secs: u64,
+    cleanup: bool,
 ) -> Value {
-    check_funding(worker, parent, &SMOKE_FUNDING_NEAR).await;
+    check_funding(worker, parent, &SMOKE_FUNDING_MILLI).await;
+    let parent_before = worker.view_account(parent.id()).await.unwrap().balance;
     let mut rec = Recorder { steps: vec![] };
     let stack = deploy_stack(
         worker,
@@ -348,12 +352,12 @@ async fn run_smoke<T: Network + 'static>(
         &mut rec,
         tag,
         "",
-        &SMOKE_FUNDING_NEAR,
+        &SMOKE_FUNDING_MILLI,
         cutoff_secs,
         "Will it rain in Lagos on 2026-12-01? (smoke-test market)",
     )
     .await;
-    let fund = |n: &str| SMOKE_FUNDING_NEAR.iter().find(|(x, _)| *x == n).unwrap().1;
+    let fund = |n: &str| SMOKE_FUNDING_MILLI.iter().find(|(x, _)| *x == n).unwrap().1;
     let alice = user(parent, &format!("alice-{tag}"), fund("alice")).await;
     let bob = user(parent, &format!("bob-{tag}"), fund("bob")).await;
     let carol = user(parent, &format!("carol-{tag}"), fund("carol")).await;
@@ -549,7 +553,7 @@ async fn run_smoke<T: Network + 'static>(
     assert_eq!(stack.token_balance(stack.market.id()).await, 0);
 
     let accounts = json!({ "market": stack.market.id(), "token": stack.token.id(), "alice": alice.id(), "bob": bob.id(), "carol": carol.id() });
-    facts(
+    let mut f = facts(
         worker,
         "smoke-test (market is RESOLVED; do not use for the frontend)",
         parent,
@@ -557,7 +561,44 @@ async fn run_smoke<T: Network + 'static>(
         accounts,
         rec,
     )
-    .await
+    .await;
+    if cleanup {
+        // Delete the disposable accounts and return their NEAR to the parent.
+        let mut deleted = vec![];
+        for acct in [alice, bob, carol] {
+            let id = acct.id().clone();
+            acct.delete_account(parent.id())
+                .await
+                .unwrap()
+                .into_result()
+                .unwrap();
+            deleted.push(id);
+        }
+        let (mid, tid) = (stack.market.id().clone(), stack.token.id().clone());
+        stack
+            .market
+            .delete_contract(parent.id())
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
+        stack
+            .token
+            .delete_contract(parent.id())
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
+        deleted.push(mid);
+        deleted.push(tid);
+        let parent_after = worker.view_account(parent.id()).await.unwrap().balance;
+        f["cleanup"] = json!({
+            "accounts_deleted_after_verification": deleted,
+            "parent_balance_before": parent_before.to_string(),
+            "parent_balance_after_cleanup": parent_after.to_string(),
+        });
+    }
+    f
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +613,7 @@ async fn run_demo<T: Network + 'static>(
     cutoff_secs: u64,
     mint_to: &[(near_workspaces::AccountId, u128)],
 ) -> Value {
-    check_funding(worker, parent, &DEMO_FUNDING_NEAR).await;
+    check_funding(worker, parent, &DEMO_FUNDING_MILLI).await;
     let mut rec = Recorder { steps: vec![] };
     let stack = deploy_stack(
         worker,
@@ -580,12 +621,17 @@ async fn run_demo<T: Network + 'static>(
         &mut rec,
         tag,
         "demo-",
-        &DEMO_FUNDING_NEAR,
+        &DEMO_FUNDING_MILLI,
         cutoff_secs,
         "Will it rain in Lagos on 2026-12-01?",
     )
     .await;
-    let lp = user(parent, &format!("lp-demo-{tag}"), 3).await;
+    let fund_lp = DEMO_FUNDING_MILLI
+        .iter()
+        .find(|(n, _)| *n == "lp")
+        .unwrap()
+        .1;
+    let lp = user(parent, &format!("lp-demo-{tag}"), fund_lp).await;
     rec.record(
         "token: register market",
         &parent
@@ -678,13 +724,26 @@ async fn run_demo<T: Network + 'static>(
 // Entry points
 // ---------------------------------------------------------------------------
 
+/// Full-access key for a testnet account from the standard credentials
+/// directory (`~/.near-credentials/testnet/<id>.json`, mode 600). Never printed.
+fn stored_key(account_id: &str) -> Option<SecretKey> {
+    let home = std::env::var("HOME").ok()?;
+    let path = format!("{home}/.near-credentials/testnet/{account_id}.json");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v["private_key"].as_str()?.parse().ok()
+}
+
+/// The funded parent. Key: `NEARODDS_TESTNET_PARENT_KEY`, else the stored
+/// credentials file for `NEARODDS_TESTNET_PARENT`.
 fn testnet_parent(worker: &Worker<near_workspaces::network::Testnet>) -> Account {
     let parent_id = std::env::var("NEARODDS_TESTNET_PARENT")
         .expect("set NEARODDS_TESTNET_PARENT to a funded testnet account id");
-    let key: SecretKey = std::env::var("NEARODDS_TESTNET_PARENT_KEY")
-        .expect("set NEARODDS_TESTNET_PARENT_KEY to its ed25519 secret key")
-        .parse()
-        .expect("invalid secret key");
+    let key: SecretKey = match std::env::var("NEARODDS_TESTNET_PARENT_KEY") {
+        Ok(k) => k.parse().expect("invalid secret key"),
+        Err(_) => stored_key(&parent_id).unwrap_or_else(|| {
+            panic!("no NEARODDS_TESTNET_PARENT_KEY and no ~/.near-credentials/testnet/{parent_id}.json")
+        }),
+    };
     Account::from_secret_key(parent_id.parse().unwrap(), key, worker)
 }
 
@@ -712,7 +771,7 @@ fn write_facts(default_name: &str, env_var: &str, facts: &Value) {
 async fn smoke_on_sandbox() {
     let worker = near_workspaces::sandbox().await.unwrap();
     let root = worker.root_account().unwrap();
-    let facts = run_smoke(&worker, Some(&worker), &root, "sbx", 120).await;
+    let facts = run_smoke(&worker, Some(&worker), &root, "sbx", 120, true).await;
     assert!(facts["steps"]
         .as_array()
         .unwrap()
@@ -746,7 +805,10 @@ async fn smoke_on_testnet() {
     let worker = near_workspaces::testnet().await.unwrap();
     let parent = testnet_parent(&worker);
     // 10 minutes: enough for ~40 testnet transactions, then the harness waits for the cutoff.
-    let facts = run_smoke(&worker, None, &parent, &unique_tag(), 600).await;
+    let cleanup = std::env::var("NEARODDS_SMOKE_CLEANUP")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    let facts = run_smoke(&worker, None, &parent, &unique_tag(), 600, cleanup).await;
     write_facts("testnet.json", "NEARODDS_DEPLOYMENT_OUT", &facts);
 }
 
@@ -773,4 +835,39 @@ async fn demo_on_testnet() {
         .collect();
     let facts = run_demo(&worker, &parent, &unique_tag(), days * 86_400, &mint).await;
     write_facts("testnet-demo.json", "NEARODDS_DEMO_OUT", &facts);
+}
+
+/// Moves (almost) all NEAR from faucet-funded accounts into the parent so one
+/// dedicated account can fund the deployments. Keys come from the credentials
+/// directory. NEARODDS_FUND_FROM="a.testnet,b.testnet".
+#[tokio::test]
+#[ignore = "testnet only: consolidates faucet funds into NEARODDS_TESTNET_PARENT"]
+async fn consolidate_funds_on_testnet() {
+    let worker = near_workspaces::testnet().await.unwrap();
+    let parent = testnet_parent(&worker);
+    for from in std::env::var("NEARODDS_FUND_FROM")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+    {
+        let from = from.trim();
+        let acct = Account::from_secret_key(
+            from.parse().unwrap(),
+            stored_key(from).unwrap_or_else(|| panic!("no stored key for {from}")),
+            &worker,
+        );
+        let bal = worker.view_account(acct.id()).await.unwrap().balance;
+        let keep = NearToken::from_millinear(200); // leave a little for the transfer fee
+        let send =
+            NearToken::from_yoctonear(bal.as_yoctonear().saturating_sub(keep.as_yoctonear()));
+        let r = acct.transfer_near(parent.id(), send).await.unwrap();
+        println!(
+            "{from} -> {}: sent {send} (tx {})",
+            parent.id(),
+            r.outcome().transaction_hash
+        );
+        assert!(r.is_success());
+    }
+    let total = worker.view_account(parent.id()).await.unwrap().balance;
+    println!("parent {} balance: {total}", parent.id());
 }

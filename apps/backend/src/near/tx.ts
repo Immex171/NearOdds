@@ -10,6 +10,10 @@ export interface JournalRow { id: string; op_key: string; tx_hash: string; state
 export class TxUncertainError extends Error {
   constructor(readonly opKey: string, readonly txHash: string, msg: string) { super(msg); this.name = "TxUncertainError"; }
 }
+/** A lower-nonce transaction from the same signing key is still unresolved: this one must wait its turn (not an error in the job). */
+export class TxBlockedError extends Error {
+  constructor(readonly opKey: string, readonly waitingFor: string[]) { super(`tx ${opKey} waits for earlier transactions of the same key: ${waitingFor.join(", ")}`); this.name = "TxBlockedError"; }
+}
 export class TxFailedError extends Error {
   constructor(readonly opKey: string, readonly txHash: string, readonly failure: string) { super(`tx ${txHash} failed: ${failure}`); this.name = "TxFailedError"; }
 }
@@ -73,6 +77,22 @@ export class TxExecutor {
       [opKey, state, extra.outcome === undefined ? null : JSON.stringify(extra.outcome), extra.failure ?? null]);
   }
 
+  /**
+   * Durable per-key ordering. A transaction may be broadcast only when every lower-nonce transaction of the same key is
+   * terminal (succeeded/failed on chain). If a higher nonce landed first the lower one would be invalid forever.
+   */
+  async waitTurn(row: JournalRow, timeoutMs = this.pollTimeoutMs): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const r = await this.db.query(
+        `SELECT t.op_key FROM tx_journal t JOIN tx_journal me ON me.op_key=$1
+         WHERE t.signer_id = me.signer_id AND t.public_key = me.public_key AND t.nonce < me.nonce AND t.state NOT IN ('succeeded','failed') ORDER BY t.nonce`, [row.op_key]);
+      if (!r.rowCount) return;
+      if (Date.now() >= deadline) throw new TxBlockedError(row.op_key, r.rows.map((x: any) => x.op_key));
+      await sleep(this.pollIntervalMs);
+    }
+  }
+
   /** Broadcast the SAME persisted bytes. Safe to call repeatedly. */
   async broadcast(row: JournalRow & { signed_tx_b64?: string }): Promise<void> {
     const full = row.signed_tx_b64 ? row : (await this.db.query("SELECT * FROM tx_journal WHERE op_key=$1", [row.op_key])).rows[0];
@@ -114,6 +134,7 @@ export class TxExecutor {
     // prepared / broadcast / uncertain: first see if the chain already knows it (do not rebroadcast blindly)
     let outcome = await this.poll(row, 2000);
     if (!outcome) {
+      await this.waitTurn(row);
       await this.broadcast(row);
       outcome = await this.poll(row);
     }
@@ -128,15 +149,6 @@ export class TxExecutor {
     }
     await this.setState(opKey, "succeeded", { outcome });
     return outcome;
-  }
-
-  /** True when the tx can no longer land (block hash expired and signer nonce advanced past it). Lets an operator re-sign safely. */
-  async isExpiredUnincluded(row: JournalRow & { block_hash: string }): Promise<boolean> {
-    const final = await this.rpc.finalBlock();
-    const b = await this.rpc.read("block", { block_id: row.block_hash });
-    if (final.height - b.header.height < 86400 + 100) return false;
-    const o = await this.rpc.once("tx", { tx_hash: row.tx_hash, sender_account_id: row.signer_id, wait_until: "NONE" }).catch(() => null);
-    return !o;
   }
 }
 

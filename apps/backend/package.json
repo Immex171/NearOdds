@@ -11,7 +11,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:up": "docker compose up -d --wait",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "test:ci": "vitest run --reporter=default --reporter=json --outputFile.json=test-report.json && node scripts/summarize-tests.mjs test-report.json",
+    "plan-creation": "tsx src/entry/plan-creation.ts",
+    "create-once": "tsx src/entry/create-once.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.4.1",

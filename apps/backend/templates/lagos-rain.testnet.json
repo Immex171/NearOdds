@@ -1,0 +1,44 @@
+{
+  "slug": "lagos-rain-testnet",
+  "category": "Weather",
+  "tag": "Lagos",
+  "questionTemplate": "Will it rain in Lagos on {{date}}?",
+  "rulesTemplate": "Observation period: the Lagos calendar day {{date}}, 00:00 to 24:00 WAT (UTC+1). Resolves YES if the NiMet daily weather report for Lagos for {{date}} records measurable rain, otherwise NO. Trading closes at the start of that day, 00:00 WAT = {{cutoffUtc}}. A trusted resolver (the market's resolver_id) sets the final result once, after the cutoff and after the NiMet report is published. There is no VOID or dispute path.",
+  "resolutionSource": "NiMet daily weather report, Lagos, {{date}}",
+  "schedule": {
+    "frequency": "weekly",
+    "weekdays": [
+      5
+    ],
+    "timezone": "Africa/Lagos",
+    "leadDays": 7,
+    "minLeadMinutes": 60
+  },
+  "cutoff": {
+    "offsetMinutesFromObservationStart": 0
+  },
+  "observation": {
+    "startOffsetMinutes": 0,
+    "durationMinutes": 1440
+  },
+  "evidence": {
+    "required": true,
+    "description": "Link to or quotation of the NiMet daily weather report for the observation date"
+  },
+  "resolverAccount": "nearodds-deploy.testnet",
+  "collateralToken": "tok-demo-3879869.nearodds-deploy.testnet",
+  "artifact": {
+    "id": "market-wasm",
+    "version": "1.0.0"
+  },
+  "internalMarketId": "mkt-1",
+  "limits": {
+    "fundingYocto": "3500000000000000000000000",
+    "creationBudgetYocto": "3500000000000000000000000",
+    "minDeployerBalanceYocto": "1000000000000000000000000",
+    "maxPerDay": 1
+  },
+  "resolution": {
+    "policy": "reviewed"
+  }
+}

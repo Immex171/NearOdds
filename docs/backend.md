@@ -40,6 +40,8 @@ the API scopes them as `offerRef` / `withdrawalRef` = `<marketRef>:<id>` (DB key
 * Dedup key `(receipt_id, log_index)`; projection + checkpoint commit in one transaction. Timestamps are the execution block's.
 * Projections keep available / reserved / pending separately. `position_redeemed` adds **only** `payout`; released offer collateral arrives via the `offer_cancelled` events of the same receipt (no double count).
 * Withdrawals are tracked by explicit `status` (`Pending` / `Completed` / `FailedRestored`); reconcile also reads `get_withdrawal`.
+* **Snapshot boundary:** reconcile anchors balances/offers at block H (`markets.snapshot_height`). Receipts at or before H are history only (events, fills/volume, activity); only newer receipts change balances, offers or withdrawals. Reconcile and ingestion serialise per market, one indexer writes at a time, and a reconcile older than the snapshot is refused.
+* **Gaps:** a missing provider block is *not* assumed skipped. A height counts as skipped only when the next existing block's `prev_height` jumps over it; otherwise it is recorded in `index_gaps`, retried, and `historyComplete` stays false.
 * **Reconcile** (worker, ~30 s): at the checkpoint block it pages all `list_offers` combos and reads `get_account`/`get_withdrawal`/`get_market`, reports drift, then corrects to the views.
 * **History**: a market records `history_start_height` (its deploy block). The indexer scans Neardata from there (resumable; `indexed_through`). Until done, `coverage.historyComplete=false` and trade history/volume may be incomplete. The demo import additionally backfills the manifest's own transactions through RPC. Contract views cannot reconstruct deleted offers or old trades.
 
@@ -49,12 +51,12 @@ Per job: validate (placeholders, byte limits, cutoff ahead, approved artifact, p
 (account name + key in the 0600 keystore + `key_refs` + `deployment_records`) **before any funding** → check the name is free (explicit `UNKNOWN_ACCOUNT`) →
 **one batch tx**: CreateAccount + Transfer(funding) + AddKey + DeployContract(approved Wasm) + `new()` (atomic: never a funded-but-uninitialised market) →
 register the market with the collateral token → verify (code hash, initializer values, token metadata/decimals, registration) → publish to registry + SSE.
-Template changes bump `version` (new dedupe keys). Account names: `mkt-<slug>-<yyyymmdd>-<8 random hex>.<deployer>`. Closed markets are never deleted.
+Jobs read their **immutable template revision** (`template_revisions`), never the mutable template; changing a template bumps `version` (new dedupe keys) and cannot alter queued/running jobs. Budget and daily capacity are reserved atomically per template (`budget_reservations`) before intent is persisted; funding that may have left the deployer is never released by a job failure. A temporary RPC outage during verification resumes verification; only a confirmed mismatch fails the job. Account names: `mkt-<slug>-<yyyymmdd>-<8 random hex>.<deployer>`. Closed markets are never deleted.
 Approved artifacts: `apps/backend/artifacts.json` (`target/wasm/market.wasm`, sha256 `b41ea881…`, the demo's verified production artifact; built by `scripts/build-wasm.sh`).
 
 ## Reliability rules
 * `tx_journal`: every transaction is signed **once per `op_key`**; bytes + hash are persisted before broadcast. Timeouts leave the op `uncertain`; resume polls the same hash and may re-broadcast the **same bytes**, never re-sign.
-* Nonces are allocated under a row lock (`signer_nonces`) across workers. Jobs are claimed with `FOR UPDATE SKIP LOCKED` + lease.
+* Nonces are allocated under a row lock (`signer_nonces`) across workers, and a transaction is broadcast only after every lower-nonce transaction of the same key is terminal (durable per-key ordering). An unresolved transaction stays `uncertain`; expiry never makes it safe to repeat. Jobs are claimed with `FOR UPDATE SKIP LOCKED` + lease.
 * Reads retry with backoff; only reads. `UNKNOWN_ACCOUNT` ≠ RPC unavailable (the latter throws and the job retries).
 
 ## Resolution
@@ -67,7 +69,7 @@ Lagos: cutoff 2026-11-12 00:00 WAT (`1794438000000000000`), observation ends 202
 ## Auth, admin, faucet
 * NEP-413: `POST /v1/auth/challenge {accountId}` → wallet `signMessage({message, recipient, nonce})` → `POST /v1/auth/verify {accountId, publicKey, signature(base64), nonce(base64)}`. Single-use 5-min nonce, recipient `AUTH_RECIPIENT`, key must be a current **full-access** key of the account. Session = bearer token (hash stored).
 * Admin = `ADMIN_ACCOUNTS` allowlist.
-* Faucet (testnet-like networks only): authenticated, recipient = session account, registers recipient with the token, per-account / 24h-global quotas, cooldown, idempotent via `Idempotency-Key`, native-NEAR budget (`native_spend`), clear disabled state. Distributes tNOC only; no NEAR to users.
+* Faucet (testnet-like networks only): authenticated, recipient = session account, registers recipient with the token, per-account / 24h-global quotas, cooldown, idempotent via a **required** `Idempotency-Key` header (same key = same claim; every new key obeys the cooldown), registration/mint costs recovered from the tx journal after crashes, native-NEAR budget (`native_spend`), clear disabled state. Distributes tNOC only; no NEAR to users.
 * **Signer roles** (deployer, resolver, token owner) are separate config entries, but the demo uses `nearodds-deploy.testnet` for all three. `/v1/admin/jobs` reports `keyIsolation:false` while they share an account.
 
 ## Endpoints

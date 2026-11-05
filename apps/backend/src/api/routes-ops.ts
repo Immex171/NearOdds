@@ -8,9 +8,10 @@ export async function opsSummary(ctx: Ctx) {
   const workers = (await db.query("SELECT worker_id, role, info, beat_at, now() - beat_at AS age FROM worker_heartbeats ORDER BY role, worker_id")).rows;
   const jobs = (await db.query("SELECT state, COUNT(*) n FROM jobs GROUP BY state")).rows;
   const unc = (await db.query("SELECT op_key, tx_hash, signer_id, state, description, failure, updated_at FROM tx_journal WHERE state IN ('prepared','broadcast','uncertain') ORDER BY id")).rows;
+  const gaps = (await db.query("SELECT scope, from_height, to_height, reason, attempts FROM index_gaps WHERE resolved_at IS NULL ORDER BY id LIMIT 50")).rows;
   const cp = (await db.query("SELECT market_ref FROM markets WHERE history_start_height IS NOT NULL AND NOT history_complete")).rowCount;
   return {
-    indexer: { checkpointHeight: f.blockHeight, tipHeight: f.tipHeight, lagBlocks: f.lagBlocks, checkpointUpdatedAt: f.checkpointUpdatedAt, marketsCatchingUp: cp },
+    indexer: { checkpointHeight: f.blockHeight, tipHeight: f.tipHeight, lagBlocks: f.lagBlocks, checkpointUpdatedAt: f.checkpointUpdatedAt, marketsCatchingUp: cp, openGaps: gaps.length, gaps: gaps.map((g: any) => ({ scope: g.scope, from: Number(g.from_height), to: Number(g.to_height), reason: g.reason, attempts: g.attempts })) },
     workers: workers.map((w: any) => ({ workerId: w.worker_id, role: w.role, lastBeatAt: new Date(w.beat_at).toISOString(), stale: Date.parse(new Date().toISOString()) - Date.parse(new Date(w.beat_at).toISOString()) > 60_000, info: w.info })),
     jobs: Object.fromEntries(jobs.map((j: any) => [j.state, Number(j.n)])),
     transactions: { unresolvedCount: unc.length, unresolved: unc.map((t: any) => ({ opKey: t.op_key, txHash: t.tx_hash, signer: t.signer_id, state: t.state, description: t.description, note: t.failure, updatedAt: new Date(t.updated_at).toISOString() })) },

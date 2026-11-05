@@ -49,6 +49,12 @@ export async function reconcileMarket(db: Db, rpc: Rpc, marketRef: string, heigh
   } catch (e) { rep.ok = false; rep.skipped = `account views unavailable: ${(e as Error).message}`; await db.query("UPDATE markets SET reconcile=$2 WHERE market_ref=$1", [marketRef, JSON.stringify(rep)]); return rep; }
 
   await withTx(db, async (c) => {
+    // Serialise with ingestion for this market. Never overwrite a snapshot that already contains newer events.
+    await c.query("SELECT pg_advisory_xact_lock(hashtext($1))", [marketRef]);
+    const cur = (await c.query("SELECT snapshot_height, applied_height FROM markets WHERE market_ref=$1", [marketRef])).rows[0];
+    const newest = Math.max(Number(cur.snapshot_height ?? 0), Number(cur.applied_height ?? 0));
+    if (newest > height) { rep.ok = false; rep.skipped = `stale reconcile at ${height}: snapshot already reflects block ${newest}`; return; }
+    await c.query("UPDATE markets SET snapshot_height=$2, applied_height=$2 WHERE market_ref=$1", [marketRef, height]);
     await c.query("UPDATE markets SET contract_status=$2, resolution=$3, outstanding_yes=$4, outstanding_no=$5, market_backing=$6 WHERE market_ref=$1",
       [marketRef, mv.status, mv.resolution ? JSON.stringify(mv.resolution) : null, mv.outstanding_yes, mv.outstanding_no, mv.market_backing]);
     // --- offers

@@ -1,3 +1,4 @@
+import { prereq } from "./helpers/prereq.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { actions } from "near-api-js";
 import { dbAvailable, freshDb } from "./helpers/db.js";
@@ -6,7 +7,7 @@ import { TestChain } from "./helpers/chain.js";
 import { Rpc, RpcUnavailableError } from "../src/near/rpc.js";
 import { TxExecutor, TxUncertainError } from "../src/near/tx.js";
 
-const ok = sandboxAvailable() && (await dbAvailable());
+const ok = await prereq({ sandbox: true });
 describe.skipIf(!ok)("tx executor on Sandbox", () => {
   let sbx: Sandbox, fdb: Awaited<ReturnType<typeof freshDb>>, chain: TestChain;
   beforeAll(async () => { sbx = await startSandbox(); fdb = await freshDb(); chain = new TestChain(sbx, fdb.db); });

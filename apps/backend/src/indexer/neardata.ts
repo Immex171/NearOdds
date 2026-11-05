@@ -6,7 +6,7 @@
 export class NeardataUnavailableError extends Error { constructor(m: string) { super(m); this.name = "NeardataUnavailableError"; } }
 
 export interface NdReceipt { execution_outcome: { id: string; block_hash: string; outcome: { executor_id: string; logs: string[]; status: any } }; receipt: { predecessor_id: string; receiver_id: string; receipt_id: string }; tx_hash?: string }
-export interface NdBlock { block: { header: { height: number; hash: string; timestamp_nanosec: string | number } }; shards: { shard_id: number; receipt_execution_outcomes?: NdReceipt[] }[] }
+export interface NdBlock { block: { header: { height: number; hash: string; prev_height?: number | null; timestamp_nanosec: string | number } }; shards: { shard_id: number; receipt_execution_outcomes?: NdReceipt[] }[] }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -37,7 +37,10 @@ export class Neardata {
     return j.block.header.height;
   }
 
-  /** null when the height was skipped (no block) */
+  /**
+   * `null` means ONLY "the provider returned no block for this height" (HTTP 404 or JSON null). It does NOT prove the
+   * height was skipped on chain: the provider may simply not have it. The caller must prove skips (see resolveRange).
+   */
   async block(height: number): Promise<NdBlock | null> {
     const r = await this.get(`/v0/block/${height}`);
     if (r.status === 404) return null;

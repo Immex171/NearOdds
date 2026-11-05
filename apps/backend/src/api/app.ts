@@ -37,7 +37,12 @@ export async function requireAdmin(ctx: Ctx, req: FastifyRequest): Promise<Sessi
 export function buildApp(ctx: Omit<Ctx, "auth"> & { auth?: AuthService }): FastifyInstance {
   const full: Ctx = { ...ctx, auth: ctx.auth ?? new AuthService(ctx.db, ctx.rpc, ctx.cfg.authRecipient, ctx.cfg.sessionTtlSeconds, ctx.cfg.adminAccounts) };
   const app = Fastify({ logger: false });
-  app.register(cors, { origin: full.cfg.corsOrigins, credentials: false, allowedHeaders: ["authorization", "content-type", "last-event-id"] });
+  app.register(cors, {
+    origin: full.cfg.corsOrigins, credentials: false,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["authorization", "content-type", "idempotency-key", "last-event-id"],
+    exposedHeaders: ["content-type"], maxAge: 600,
+  });
   app.setErrorHandler((e: any, _req, reply) => {
     if (e instanceof HttpError) return reply.code(e.status).send({ error: { code: e.code, message: e.message, details: e.details } });
     if (e?.validation || e?.statusCode === 400) return reply.code(400).send({ error: { code: "bad_request", message: e.message } });

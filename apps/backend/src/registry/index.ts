@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { ConfigView, MarketView } from "@nearodds/types";
 import type { Q } from "../db/index.js";
-import { Rpc, RpcError } from "../near/rpc.js";
+import { Rpc, RpcError, RpcUnavailableError } from "../near/rpc.js";
 
 export const EXPECTED_SCHEMA_VERSION = 3;
 
@@ -50,7 +50,7 @@ export async function verifyMarketOnChain(rpc: Rpc, e: Expectation): Promise<Cha
   try {
     cfg = await rpc.callView<ConfigView>(e.contractId, "get_config");
     mkt = await rpc.callView<MarketView>(e.contractId, "get_market", { market_id: e.marketId });
-  } catch (err) { problems.push(`market views failed: ${(err as Error).message}`); return out; }
+  } catch (err) { if (err instanceof RpcUnavailableError) throw err; problems.push(`market views failed: ${(err as Error).message}`); return out; }
   out.config = cfg; out.market = mkt;
   if (cfg.schema_version !== EXPECTED_SCHEMA_VERSION) problems.push(`schema_version ${cfg.schema_version} != ${EXPECTED_SCHEMA_VERSION}`);
   if (cfg.market_id !== e.marketId) problems.push(`config.market_id ${cfg.market_id} != ${e.marketId}`);
@@ -67,7 +67,7 @@ export async function verifyMarketOnChain(rpc: Rpc, e: Expectation): Promise<Cha
     const bal = await rpc.callView<unknown>(e.tokenId, "storage_balance_of", { account_id: e.contractId });
     out.tokenRegistered = bal !== null;
     if (bal === null) problems.push("market account is not registered with the collateral token");
-  } catch (err) { problems.push(`token views failed: ${(err as Error).message}`); }
+  } catch (err) { if (err instanceof RpcUnavailableError) throw err; problems.push(`token views failed: ${(err as Error).message}`); }
   out.ok = problems.length === 0;
   return out;
 }

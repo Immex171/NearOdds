@@ -1,3 +1,4 @@
+import { prereq } from "./helpers/prereq.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dbAvailable, freshDb } from "./helpers/db.js";
 import { sandboxAvailable, startSandbox, type Sandbox } from "./helpers/sandbox.js";
@@ -10,7 +11,7 @@ import { backfillTransactions } from "../src/indexer/runner.js";
 import { keeperPass } from "../src/keeper/loop.js";
 import { proposeResolution, reviewProposal, ResolutionError } from "../src/keeper/resolution.js";
 
-const ok = sandboxAvailable() && (await dbAvailable());
+const ok = await prereq({ sandbox: true });
 describe.skipIf(!ok)("Sandbox lifecycle: deposits, offers, partial fills, cancel, resolution, redeem, withdraw", () => {
   let sbx: Sandbox, fdb: Awaited<ReturnType<typeof freshDb>>, chain: TestChain, env: Awaited<ReturnType<typeof keeperEnv>>;
   beforeAll(async () => { sbx = await startSandbox(); fdb = await freshDb(); chain = new TestChain(sbx, fdb.db); });

@@ -10,7 +10,9 @@ import { publishMarket, verifyMarketOnChain } from "../registry/index.js";
 import { JobFailed, RetryLater, type JobCtx } from "./jobs.js";
 import { loadApprovedArtifact } from "./artifacts.js";
 import type { Signers } from "./signers.js";
-import { TemplateSpec, occurrenceFor, renderAndValidate } from "./template.js";
+import { occurrenceFor, renderAndValidate } from "./template.js";
+import { loadRevision } from "./templates.js";
+import { BudgetError, markSpent, reserveBudget } from "./budget.js";
 
 export interface KeeperDeps { cfg: Config; db: Db; rpc: Rpc; signers: Signers; tx: TxExecutor; now?: () => number }
 
@@ -33,7 +35,7 @@ export async function createMarketJob(d: KeeperDeps, c: JobCtx): Promise<void> {
 
   const tpl = (await db.query("SELECT * FROM templates WHERE id=$1", [p.templateId])).rows[0];
   if (!tpl) throw new JobFailed(`template ${p.templateId} no longer exists`);
-  const spec = TemplateSpec.parse(tpl.spec);
+  const spec = await loadRevision(db, p.templateId, p.templateVersion); // frozen at scheduling time
   const [y, m, dd] = (p.occurrenceDate as string).split("-").map(Number);
   const occ = occurrenceFor(spec, p.templateVersion, y, m, dd);
 
@@ -46,10 +48,8 @@ export async function createMarketJob(d: KeeperDeps, c: JobCtx): Promise<void> {
     if (!tpl.enabled) throw new JobFailed("template was disabled before creation started");
     const funding = BigInt(spec.limits.fundingYocto);
 
-    const day = (await db.query("SELECT COUNT(*) n FROM jobs WHERE kind='create_market' AND payload->>'templateId'=$1 AND payload ? 'intent' AND id<>$2 AND state NOT IN ('failed','cancelled') AND created_at > now() - interval '24 hours'", [String(p.templateId), job.id])).rows[0].n;
-    if (Number(day) >= spec.limits.maxPerDay) throw new JobFailed(`template creation limit reached (${spec.limits.maxPerDay} per 24h)`);
-    const spent = (await db.query("SELECT COALESCE(SUM((payload->'intent'->>'fundingYocto')::numeric),0) s FROM jobs WHERE kind='create_market' AND payload->>'templateId'=$1 AND payload ? 'intent' AND id<>$2 AND state NOT IN ('failed','cancelled')", [String(p.templateId), job.id])).rows[0].s;
-    if (BigInt(spent) + funding > BigInt(spec.limits.creationBudgetYocto)) throw new JobFailed(`template creation budget exhausted (${spent} + ${funding} > ${spec.limits.creationBudgetYocto} yocto)`);
+    try { await reserveBudget(db, String(p.templateId), job.id, funding, spec.limits); }
+    catch (e) { if (e instanceof BudgetError) throw new JobFailed(e.message); throw e; }
 
     const dep = await rpc.viewAccount(cfg.deployer.accountId); // unavailable => retry; never guess
     if (!dep.exists) throw new JobFailed(`deployer account ${cfg.deployer.accountId} does not exist`);
@@ -101,6 +101,7 @@ export async function createMarketJob(d: KeeperDeps, c: JobCtx): Promise<void> {
       actions.functionCall("new", intent.initArgs, 100n * TGAS, 0n),
     ];
     const out = await tx.execute(`create:${job.id}`, job.id, signer, intent.accountName, acts, `create+fund+deploy+init ${intent.accountName}`);
+    await markSpent(db, job.id, BigInt(intent.fundingYocto));
     await c.patch({ createTx: out.transaction.hash, createBlockHash: out.transaction_outcome.block_hash }, "created");
   }
   let startHeight: number | null = job.payload.deployHeight ?? null;
@@ -134,7 +135,7 @@ export async function createMarketJob(d: KeeperDeps, c: JobCtx): Promise<void> {
   await withTx(db, async (cl) => {
     const ref = await publishMarket(cl, {
       network: cfg.network, contractId: intent.accountName, internalMarketId: intent.initArgs.market_id, tokenId: spec.collateralToken, verification: v, source: "keeper",
-      category: spec.category, tag: spec.tag ?? null, templateId: String(tpl.id), occurrenceKey: occ.dedupe,
+      category: spec.category, tag: spec.tag ?? null, templateId: String(p.templateId), occurrenceKey: occ.dedupe,
       observationStartNs: intent.obsStartNs, observationEndNs: intent.obsEndNs, historyStartHeight: startHeight,
     });
     await cl.query("UPDATE deployment_records SET market_ref=$2, status='published', code_hash_base58=$3, tx_hashes=$4, verification=$5 WHERE job_id=$1",

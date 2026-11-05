@@ -1,8 +1,9 @@
+import { prereq } from "./helpers/prereq.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dbAvailable, freshDb } from "./helpers/db.js";
 import { ProviderRegistry, ResolutionError, proposeResolution, resolutionTick, reviewProposal, type SourceProvider } from "../src/keeper/resolution.js";
 
-const ok = await dbAvailable();
+const ok = await prereq();
 const NOW = Date.UTC(2026, 10, 14); // after observation end of Nov 12 market
 const ns = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
 

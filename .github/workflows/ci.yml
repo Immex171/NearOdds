@@ -55,3 +55,61 @@ jobs:
           path: |
             target/wasm/market.wasm
             target/wasm/test_collateral.wasm
+
+  backend:
+    # Needs the Wasm artifacts built by the contracts job. Integration tests (PostgreSQL + NEAR Sandbox) are REQUIRED here:
+    # a missing prerequisite fails the job instead of skipping tests.
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+      TEST_DATABASE_ADMIN_URL: postgres://nearodds:nearodds@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: nearodds
+          POSTGRES_PASSWORD: nearodds
+          POSTGRES_DB: nearodds
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nearodds" --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck backend and shared types
+        run: pnpm --filter @nearodds/backend typecheck
+
+      - name: Wasm artifacts from the contracts job
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: target/wasm
+
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev
+      - name: Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # The near-sandbox crate's build script downloads the sandbox node binary the tests start.
+      - name: Fetch NEAR Sandbox binary
+        run: cargo build -p near-sandbox
+
+      - name: Backend tests (PostgreSQL + Sandbox, no skips allowed)
+        run: pnpm --filter @nearodds/backend test:ci
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-report
+          path: apps/backend/test-report.json

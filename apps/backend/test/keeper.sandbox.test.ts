@@ -1,3 +1,4 @@
+import { prereq } from "./helpers/prereq.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { statSync } from "node:fs";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ import { TxExecutor } from "../src/near/tx.js";
 import { buildApp } from "../src/api/app.js";
 import { loadApprovedArtifact } from "../src/keeper/artifacts.js";
 
-const ok = sandboxAvailable() && (await dbAvailable());
+const ok = await prereq({ sandbox: true });
 describe.skipIf(!ok)("keeper: automatic market creation on Sandbox", () => {
   let sbx: Sandbox, fdb: Awaited<ReturnType<typeof freshDb>>, chain: TestChain, env: Awaited<ReturnType<typeof keeperEnv>>, deployerId: string, tokenId: string, tplId: string;
   const release = () => fdb.db.query("UPDATE jobs SET run_after=now(), lease_until=NULL WHERE state IN ('queued','uncertain','running')");

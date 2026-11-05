@@ -1,34 +1,17 @@
+import { prereq } from "./helpers/prereq.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dbAvailable, freshDb } from "./helpers/db.js";
 import { Neardata, NeardataUnavailableError, type NdBlock } from "../src/indexer/neardata.js";
+import { block as blockH, ev, fakeNeardata, link, type R } from "./helpers/fake-chain.js";
 import { Indexer } from "../src/indexer/runner.js";
 import { buildApp } from "../src/api/app.js";
 import { loadConfig } from "../src/config/index.js";
 import { Rpc } from "../src/near/rpc.js";
 
 const M = "mkt-a.test.testnet", OTHER = "evil.testnet";
-const ok = await dbAvailable();
+const ok = await prereq();
+const block = (h: number, r: R[]) => blockH(h, r, M);
 
-const ev = (event: string, data: object, version = "1.0.0", standard = "nearodds_market") => "EVENT_JSON:" + JSON.stringify({ standard, version, event, data });
-type R = { id: string; executor?: string; status?: any; logs: string[] };
-const block = (height: number, receipts: R[]): NdBlock => ({
-  block: { header: { height, hash: `h${height}`, timestamp_nanosec: String(1_800_000_000_000_000_000n + BigInt(height) * 1_000_000_000n) } },
-  shards: [{ shard_id: 0, receipt_execution_outcomes: receipts.map((r) => ({ execution_outcome: { id: r.id, block_hash: `h${height}`, outcome: { executor_id: r.executor ?? M, logs: r.logs, status: r.status ?? { SuccessValue: "" } } }, receipt: { predecessor_id: "x", receiver_id: r.executor ?? M, receipt_id: r.id }, tx_hash: "tx" + r.id })) }],
-});
-
-function fakeNeardata(chain: Map<number, NdBlock>, tip: () => number, opts: { fail429?: number; down?: boolean } = {}) {
-  let n429 = opts.fail429 ?? 0;
-  const f = (async (url: string) => {
-    if (opts.down) throw new Error("ECONNRESET");
-    const path = new URL(url).pathname;
-    if (path === "/v0/last_block/final") return new Response(JSON.stringify({ block: { header: { height: tip() } }, shards: [] }));
-    const h = Number(path.split("/").pop());
-    if (n429 > 0) { n429--; return new Response("slow down", { status: 429 }); }
-    const b = chain.get(h);
-    return b ? new Response(JSON.stringify(b)) : new Response("null", { status: 404 });
-  }) as unknown as typeof fetch;
-  return new Neardata("http://nd.test", null, f, 6, 1);
-}
 
 describe.skipIf(!ok)("indexer (fake Neardata): filtering, dedupe, atomicity, restart, projections", () => {
   let fdb: Awaited<ReturnType<typeof freshDb>>, ref: string;
@@ -57,7 +40,7 @@ describe.skipIf(!ok)("indexer (fake Neardata): filtering, dedupe, atomicity, res
     chain.set(107, block(107, [{ id: "r107", logs: [ev("withdrawal_requested", { account_id: "alice.testnet", withdrawal_id: "1", receiver_id: "alice.testnet", amount: U(10) })] }]));
     // the settlement callback FAILED later: its log must not complete the withdrawal
     chain.set(108, block(108, [{ id: "r108", status: { Failure: { ActionError: {} } }, logs: [ev("withdrawal_completed", { account_id: "alice.testnet", withdrawal_id: "1", amount: U(10) })] }]));
-    tip = 108;
+    tip = 108; link(chain);
   });
   afterAll(async () => { await fdb?.drop(); });
 
@@ -88,14 +71,14 @@ describe.skipIf(!ok)("indexer (fake Neardata): filtering, dedupe, atomicity, res
   it("commits projections and checkpoint atomically: a poisoned batch rolls back entirely", async () => {
     chain.set(109, block(109, [{ id: "r109", logs: [ev("deposit", { account_id: "alice.testnet", token_id: "t", amount: "5" })] }]));
     chain.set(110, block(110, [{ id: "r110", logs: [ev("deposit", { account_id: "alice.testnet", token_id: "t", amount: "not-a-number" })] }]));
-    tip = 110;
+    tip = 110; link(chain);
     const idx = new Indexer(fdb.db, fakeNeardata(chain, () => tip), { batch: 10 });
     const before = (await acct("alice.testnet")).available_collateral;
     await expect(idx.step()).rejects.toThrow();
     expect(await idx.checkpoint()).toBe(108);                        // checkpoint did not move
     expect((await acct("alice.testnet")).available_collateral).toBe(before); // block 109's deposit was rolled back with it
     expect(idx.lastError).toBeTruthy();
-    chain.delete(110); tip = 109;                                     // operator fixes the source; indexer recovers
+    chain.delete(110); tip = 109; link(chain);                                   // operator fixes the source; indexer recovers
     await idx.step();
     expect(await idx.checkpoint()).toBe(109);
     expect(BigInt((await acct("alice.testnet")).available_collateral)).toBe(BigInt(before) + 5n);

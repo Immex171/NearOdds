@@ -4,7 +4,7 @@ import { withTx } from "../db/index.js";
 import { HttpError } from "../api/http.js";
 import { roleStatus } from "../keeper/signers.js";
 import { enqueue } from "../keeper/jobs.js";
-import { TOKEN_REGISTRATION_YOCTO } from "./mint.js";
+import { TOKEN_REGISTRATION_YOCTO, recoverFaucetSpend } from "./mint.js";
 
 const TESTNET_LIKE = new Set(["testnet", "sandbox", "localnet"]);
 /** Reserved native NEAR per claim: registration deposit + a generous allowance for two transactions' gas. */
@@ -17,6 +17,7 @@ export async function faucetToken(db: Db, cfg: Config): Promise<string | null> {
 }
 
 export async function faucetState(db: Db, cfg: Config) {
+  await recoverFaucetSpend(db);
   const roles = roleStatus(cfg);
   const token = await faucetToken(db, cfg);
   let reason: string | null = null;
@@ -37,17 +38,18 @@ export async function faucetState(db: Db, cfg: Config) {
 }
 
 export async function claimFaucet(db: Db, cfg: Config, accountId: string, idempotencyKey: string | undefined) {
+  // Idempotency-Key is REQUIRED: the same key always returns the same claim; there is no keyless claim path.
+  if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 80) throw new HttpError(400, "idempotency_key_required", "send an Idempotency-Key header (8-80 characters, e.g. a UUID) and reuse it when retrying");
   const st = await faucetState(db, cfg);
   if (!st.enabled) throw new HttpError(503, "faucet_disabled", st.disabledReason ?? "faucet disabled");
-  const key = `${accountId}:${(idempotencyKey ?? "").slice(0, 80)}`;
+  const key = `${accountId}:${idempotencyKey}`;
   return withTx(db, async (c) => {
     await c.query("SELECT pg_advisory_xact_lock(727002)"); // serialise quota decisions
     const dup = await c.query("SELECT * FROM faucet_claims WHERE request_key=$1", [key]);
     if (dup.rowCount) return { claim: dup.rows[0], replayed: true };
-    if (!idempotencyKey) {
-      const recent = await c.query("SELECT 1 FROM faucet_claims WHERE account_id=$1 AND state<>'failed' AND created_at > now() - make_interval(secs => $2)", [accountId, cfg.faucet.cooldownSeconds]);
-      if (recent.rowCount) throw new HttpError(429, "cooldown", `wait ${cfg.faucet.cooldownSeconds}s between claims, or retry the same request with its Idempotency-Key`);
-    }
+    // Every genuinely new claim (fresh key) obeys the cooldown.
+    const recent = await c.query("SELECT 1 FROM faucet_claims WHERE account_id=$1 AND state<>'failed' AND created_at > now() - make_interval(secs => $2)", [accountId, cfg.faucet.cooldownSeconds]);
+    if (recent.rowCount) throw new HttpError(429, "cooldown", `wait ${cfg.faucet.cooldownSeconds}s between claims`);
     const amt = cfg.faucet.amount;
     const per = BigInt((await c.query("SELECT COALESCE(SUM(amount),0) s FROM faucet_claims WHERE account_id=$1 AND state<>'failed'", [accountId])).rows[0].s);
     if (per + amt > cfg.faucet.perAccountLimit) throw new HttpError(429, "account_quota", `per-account limit reached (${per} of ${cfg.faucet.perAccountLimit} base units claimed)`);

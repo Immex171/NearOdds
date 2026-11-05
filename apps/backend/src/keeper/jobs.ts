@@ -1,6 +1,7 @@
 import type { Db } from "../db/index.js";
 import { RpcUnavailableError } from "../near/rpc.js";
-import { TxFailedError, TxUncertainError } from "../near/tx.js";
+import { TxBlockedError, TxFailedError, TxUncertainError } from "../near/tx.js";
+import { releaseIfUnsent } from "./budget.js";
 
 export type JobState = "queued" | "running" | "uncertain" | "succeeded" | "failed" | "cancelled";
 export interface Job { id: string; kind: string; dedupe_key: string; state: JobState; payload: any; step: string | null; attempts: number; owner: string | null }
@@ -32,6 +33,7 @@ export async function patchPayload(db: Db, job: Job, patch: object, step?: strin
 }
 
 async function settle(db: Db, job: Job, state: JobState, err: string | null, delayMs = 0) {
+  if (state === "failed") await releaseIfUnsent(db, job.id).catch(() => {}); // frees budget only if no funds can have moved
   await db.query("UPDATE jobs SET state=$3, last_error=$4, run_after=now() + make_interval(secs => $5), lease_until=NULL, owner=NULL, updated_at=now() WHERE id=$1 AND owner=$2", [job.id, job.owner, state, err, delayMs / 1000]);
 }
 
@@ -53,6 +55,7 @@ export async function runOne(db: Db, workerId: string, handlers: Record<string, 
     const msg = e?.message ?? String(e);
     if (e instanceof JobFailed || e instanceof TxFailedError) await settle(db, job, "failed", msg);
     else if (e instanceof TxUncertainError) await settle(db, job, "uncertain", msg, 60_000);
+    else if (e instanceof TxBlockedError) await settle(db, job, job.state === "uncertain" ? "uncertain" : "queued", msg, 10_000);
     else if (e instanceof RetryLater) await settle(db, job, "queued", msg, e.delayMs);
     else if (e instanceof RpcUnavailableError) await settle(db, job, job.attempts > MAX_ATTEMPTS ? "failed" : (job.state === "uncertain" ? "uncertain" : "queued"), `rpc unavailable: ${msg}`, 30_000);
     else await settle(db, job, job.attempts > 8 ? "failed" : "queued", `unexpected: ${msg}`, 15_000 * job.attempts);

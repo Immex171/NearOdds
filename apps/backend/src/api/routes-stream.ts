@@ -45,7 +45,7 @@ export function registerStreamRoutes(app: FastifyInstance, ctx: Ctx) {
     }
     const q = req.query as Record<string, string | undefined>;
     const c: Client = { res: reply.raw, markets: q.markets ? new Set(q.markets.split(",")) : null, account: q.account ?? null };
-    reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no", "access-control-allow-origin": req.headers.origin ?? "*" });
+    reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no", ...(req.headers.origin && ctx.cfg.corsOrigins.includes(req.headers.origin) ? { "access-control-allow-origin": req.headers.origin, vary: "Origin" } : {}) });
     const fr = await freshness(ctx.db);
     reply.raw.write(`retry: 3000\nevent: hello\ndata: ${JSON.stringify({ freshness: fr, resync: req.headers["last-event-id"] !== undefined, hint: "Fetch snapshots after (re)connecting; the stream only carries changes." })}\n\n`);
     clients.add(c);

@@ -23,8 +23,11 @@ export function registerMarketRoutes(app: FastifyInstance, ctx: Ctx) {
     if (q.category) { p.push(q.category); where.push(`category = $${p.length}`); }
     if (q.status) {
       if (!["open", "awaiting", "resolved"].includes(q.status)) throw badRequest("status must be open|awaiting|resolved");
-      p.push(now.toString());
-      where.push(q.status === "resolved" ? `contract_status='Resolved'` : q.status === "open" ? `contract_status<>'Resolved' AND cutoff_ns > $${p.length}::numeric` : `contract_status<>'Resolved' AND cutoff_ns <= $${p.length}::numeric`);
+      if (q.status === "resolved") where.push(`contract_status='Resolved'`);
+      else {
+        p.push(now.toString()); // only bind the timestamp when the predicate uses it
+        where.push(q.status === "open" ? `contract_status<>'Resolved' AND cutoff_ns > $${p.length}::numeric` : `contract_status<>'Resolved' AND cutoff_ns <= $${p.length}::numeric`);
+      }
     }
     const sort = ({ newest: "created_at DESC", closing: "cutoff_ns ASC", volume: "(SELECT COALESCE(SUM(collateral_amount),0) FROM fills f WHERE f.market_ref=markets.market_ref) DESC" } as Record<string, string>)[q.sort ?? "newest"];
     if (!sort) throw badRequest("sort must be newest|closing|volume");

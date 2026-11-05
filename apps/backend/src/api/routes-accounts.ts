@@ -43,4 +43,4 @@ export function registerAccountRoutes(app: FastifyInstance, { db }: Ctx) {
 
 const offerDto = (o: any) => ({ marketRef: o.market_ref, offerId: o.offer_id, offerRef: `${o.market_ref}:${o.offer_id}`, outcome: o.outcome, side: o.side, price: o.price, remainingQuantity: o.remaining, originalQuantity: o.quantity, expiresAtNs: o.expires_at_ns, state: o.state });
 /** `status` is explicit: a non-null record may already be Completed. Only Pending is unconfirmed. */
-const withdrawalDto = (w: any) => ({ marketRef: w.market_ref, withdrawalId: w.withdrawal_id, withdrawalRef: `${w.market_ref}:${w.withdrawal_id}`, amount: w.amount, status: w.status, receiver: w.receiver_id, requestedNs: w.requested_ns, settledNs: w.settled_ns, confirmed: w.status !== "Pending" });
+const withdrawalDto = (w: any) => ({ marketRef: w.market_ref, withdrawalId: w.withdrawal_id, withdrawalRef: `${w.market_ref}:${w.withdrawal_id}`, amount: w.amount, status: w.status, receiver: w.receiver_id, requestedNs: w.requested_ns, settledNs: w.settled_ns, confirmed: w.status === "Completed" || w.status === "FailedRestored" });

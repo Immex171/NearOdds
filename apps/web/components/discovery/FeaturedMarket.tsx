@@ -23,7 +23,7 @@ export function FeaturedMarket({ markets }: { markets: Market[] | null }) {
     <section aria-roledescription="carousel" aria-label="Featured markets" className="relative flex min-h-[330px] flex-col lg:min-h-[340px] rounded-[14px] border border-line bg-card p-4 md:p-5">
       <div className="flex items-center gap-3">
         <TopicIcon market={m} size={36} />
-        <span className="text-xs font-medium text-mute">{m.category}{m.tag ? ` · ${m.tag}` : ""}</span>
+        <span className="text-xs font-medium text-mute">{[m.category, m.tag].filter(Boolean).join(" · ") || "Live market"}</span>
         <span className="ml-auto flex items-center gap-1">
           {list.length > 1 && (
             <>
@@ -54,7 +54,7 @@ export function FeaturedMarket({ markets }: { markets: Market[] | null }) {
         </div>
       </div>
       <div className="mt-3 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 text-xs text-mute">
-        <span>{compact(m.volume)} {adapter.symbol} volume</span>
+        <span>{m.volume == null ? "Volume unavailable" : `${compact(m.volume)} ${adapter.symbol} volume`}</span>
         <span>{timeUntil(m.closesAt, now)}</span>
         <Link href={`/markets/${m.id}`} className="font-semibold text-brand hover:underline">Open market →</Link>
         {list.length > 1 && (

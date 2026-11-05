@@ -7,7 +7,7 @@ import { Icon } from "../ui/Icon";
 import { Badge, Btn } from "../ui/bits";
 
 export function AccountMenu() {
-  const { session, accountId, disconnect, setConnectOpen, setHelpOpen, resetDemo, rejectNext, setRejectNext } = useApp();
+  const { session, accountId, disconnect, setConnectOpen, setHelpOpen, resetDemo, rejectNext, setRejectNext, liveConfigured, exitDemo } = useApp();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -47,7 +47,8 @@ export function AccountMenu() {
           </div>
           {session.kind !== "none" && <Link role="menuitem" className={item} href="/funds" onClick={close}>Funds</Link>}
           <button role="menuitem" className={item} onClick={() => { close(); setHelpOpen(true); }}>How it works</button>
-          <button role="menuitem" className={item} onClick={() => { close(); resetDemo(); }}>Reset demo</button>
+          {session.kind === "demo" && <button role="menuitem" className={item} onClick={() => { close(); resetDemo(); }}>Reset demo</button>}
+          {session.kind === "demo" && liveConfigured && <button role="menuitem" className={`${item} font-semibold text-brand`} onClick={() => { close(); exitDemo(); }}>Switch to live testnet</button>}
           {session.kind === "demo" && (
             <button role="menuitemcheckbox" aria-checked={rejectNext} className={item} onClick={() => { setRejectNext(!rejectNext); close(); }}>
               {rejectNext ? "✓ " : ""}Demo: reject next transaction

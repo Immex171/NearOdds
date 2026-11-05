@@ -7,18 +7,22 @@ export type Side = "buy" | "sell";
 export interface Market {
   id: string;
   question: string;
-  category: Category;
+  /** null = the source has no category (live markets never invent one). */
+  category: Category | null;
   /** Category-specific tag, e.g. crypto asset. */
   tag?: string;
   /** Short glyph for the topic thumbnail. */
   icon: string;
   description: string;
   status: MarketStatus;
-  /** Unix ms. */
-  createdAt: number;
+  /** Unix ms. null = the source does not record a creation time. */
+  createdAt: number | null;
+  /** Trading cutoff, unix ms. This is NOT the observation period. */
   closesAt: number;
-  /** Total traded collateral, base units. */
-  volume: bigint;
+  /** Total traded collateral, base units. null = unavailable (no indexer). */
+  volume: bigint | null;
+  /** Live only: the contract's own action flags (get_market). Absent in demo. */
+  flags?: { splitOpen: boolean; mergeOpen: boolean; tradingOpen: boolean };
   /** Display probability: last YES trade price in base units (1_000_000 = 1.0). null = no trades. */
   lastYes: bigint | null;
   /** Price 24h ago, for movement. */
@@ -96,7 +100,40 @@ export interface AccountState {
   storageCostYocto?: bigint;
   maxOpenOffers: number;
   withdrawalStatus?: "Pending" | "Completed" | "FailedRestored" | null;
+  /** Live only: the latest withdrawal record (pending or last settled). */
+  withdrawal?: { id: string; amount: bigint; status: "Pending" | "Completed" | "FailedRestored" } | null;
+  /** Live only: registered with the collateral token (NEP-145). */
+  tokenRegistered?: boolean;
+  /** Live only: native NEAR balance in yoctoNEAR (fees, storage). */
+  nearBalance?: bigint;
 }
+
+/** Trading limits. Live values come from get_config(); demo uses the documented defaults. All base units. */
+export interface Limits {
+  priceScale: bigint;
+  tick: bigint;
+  minPrice: bigint;
+  maxPrice: bigint;
+  lot: bigint;
+  minOrder: bigint;
+  maxOpenOffers: number;
+}
+
+/** What redeem would do now (get_redemption_preview). */
+export interface RedeemPreview {
+  redeemable: boolean;
+  outcome: Outcome | null;
+  winningShares: bigint;
+  losingShares: bigint;
+  payout: bigint;
+  releasedCollateral: bigint;
+  releasedShares: bigint;
+  offersToRelease: number;
+  availableAfter: bigint;
+}
+
+/** Live deployment verification state. Transactions stay disabled until it is "ok". */
+export type Deployment = { state: "idle" | "checking" } | { state: "ok" } | { state: "error"; problems: string[] };
 
 export interface Capabilities {
   trading: boolean;
@@ -110,7 +147,8 @@ export interface Capabilities {
   history: boolean;
 }
 
-export type TxPhase = "idle" | "review" | "awaiting-wallet" | "submitted" | "confirming" | "confirmed" | "failed";
+/** "unconfirmed" = finished but the outcome is not proven (e.g. a withdrawal still Pending). Never treat it as success or failure. */
+export type TxPhase = "idle" | "review" | "awaiting-wallet" | "submitted" | "confirming" | "confirmed" | "unconfirmed" | "failed";
 export interface TxState { phase: TxPhase; message?: string; hash?: string }
 export type TxReporter = (s: TxState) => void;
 
@@ -158,7 +196,13 @@ export interface DataAdapter {
   fillOffer(offerId: string, qty: bigint, r: TxReporter): Promise<void>;
   cancelOffer(offerId: string, r: TxReporter): Promise<void>;
   redeem(marketId: string, r: TxReporter): Promise<void>;
+  /** Trading limits in force for this adapter. */
+  limits: Limits;
+  /** Preview of `redeem` for the connected account (null when not applicable). */
+  redeemPreview(marketId: string, accountId: string): Promise<RedeemPreview | null>;
   reset?(): void;
-  /** Live only: register the account with the market and the token. */
-  register?(r: TxReporter): Promise<void>;
+  /** Live only: register with the collateral token (NEP-145). */
+  registerToken?(r: TxReporter): Promise<void>;
+  /** Live only: register with the market contract. */
+  registerMarket?(r: TxReporter): Promise<void>;
 }

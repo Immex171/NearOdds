@@ -1,32 +1,38 @@
-import { ONE, mulPrice, tryParseUnits } from "./amounts";
-import type { Offer, Outcome, Side } from "./types";
+import { ONE, formatUnits, mulPrice, tryParseUnits } from "./amounts";
+import type { Limits, Offer, Outcome, Side } from "./types";
 
-/** Contract trading parameters (docs/contract-interface.md, schema v3). */
-export const PRICE_TICK = 10_000n; // 0.01
-export const MIN_PRICE = 10_000n;
-export const MAX_PRICE = 990_000n;
-export const QUANTITY_LOT = 100n; // share base units
-export const MIN_ORDER_QUANTITY = 10_000n; // 0.01 share
-export const MAX_OPEN_OFFERS = 10;
+/** Documented schema-v3 defaults (docs/contract-interface.md). The live adapter replaces them with get_config().trading. */
+export const DEFAULT_LIMITS: Limits = {
+  priceScale: 1_000_000n, tick: 10_000n, minPrice: 10_000n, maxPrice: 990_000n, lot: 100n, minOrder: 10_000n, maxOpenOffers: 10,
+};
+export const PRICE_TICK = DEFAULT_LIMITS.tick;
+export const MIN_PRICE = DEFAULT_LIMITS.minPrice;
+export const MAX_PRICE = DEFAULT_LIMITS.maxPrice;
+export const QUANTITY_LOT = DEFAULT_LIMITS.lot;
+export const MIN_ORDER_QUANTITY = DEFAULT_LIMITS.minOrder;
+export const MAX_OPEN_OFFERS = DEFAULT_LIMITS.maxOpenOffers;
+
+const dec = (v: bigint) => formatUnits(v, 0, 6);
 
 export type Parsed = { ok: true; value: bigint } | { ok: false; error: string };
 
 /** Share quantity input -> base units; must be a multiple of the lot. */
-export function parseQuantity(input: string, opts: { min?: bigint } = {}): Parsed {
+export function parseQuantity(input: string, opts: { min?: bigint; limits?: Limits } = {}): Parsed {
+  const L = opts.limits ?? DEFAULT_LIMITS;
   const r = tryParseUnits(input);
   if (!r.ok) return r;
   if (r.value === 0n) return { ok: false, error: "Enter an amount above zero" };
-  if (r.value % QUANTITY_LOT !== 0n) return { ok: false, error: "Shares must be a multiple of 0.0001" };
-  if (opts.min && r.value < opts.min) return { ok: false, error: "Minimum order is 0.01 shares" };
+  if (r.value % L.lot !== 0n) return { ok: false, error: `Shares must be a multiple of ${dec(L.lot)}` };
+  if (opts.min && r.value < opts.min) return { ok: false, error: `Minimum order is ${dec(opts.min)} shares` };
   return r;
 }
 
 /** Price input ("0.62") -> base units; multiple of the 0.01 tick within [0.01, 0.99]. */
-export function parsePrice(input: string): Parsed {
+export function parsePrice(input: string, L: Limits = DEFAULT_LIMITS): Parsed {
   const r = tryParseUnits(input);
   if (!r.ok) return r;
-  if (r.value % PRICE_TICK !== 0n) return { ok: false, error: "Price must be a multiple of 0.01" };
-  if (r.value < MIN_PRICE || r.value > MAX_PRICE) return { ok: false, error: "Price must be between 0.01 and 0.99" };
+  if (r.value % L.tick !== 0n) return { ok: false, error: `Price must be a multiple of ${dec(L.tick)}` };
+  if (r.value < L.minPrice || r.value > L.maxPrice) return { ok: false, error: `Price must be between ${dec(L.minPrice)} and ${dec(L.maxPrice)}` };
   return r;
 }
 

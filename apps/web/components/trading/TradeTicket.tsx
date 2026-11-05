@@ -1,25 +1,34 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ONE, formatUnits, tryParseUnits } from "@/lib/amounts";
 import { useApp } from "@/lib/app-context";
 import { useTx } from "@/lib/hooks";
 import { marketLabel, money, priceStr } from "@/lib/format";
-import { MAX_OPEN_OFFERS, MAX_PRICE, MIN_ORDER_QUANTITY, MIN_PRICE, PRICE_TICK, QUANTITY_LOT, exactCost, parsePrice, parseQuantity, resolveOffer, takeCandidates, type TicketValue } from "@/lib/trading";
+import { exactCost, parsePrice, parseQuantity, resolveOffer, takeCandidates, type TicketValue } from "@/lib/trading";
 import type { Market, Offer, Outcome } from "@/lib/types";
 import { TransactionStatus } from "../account/TransactionStatus";
 import { Icon } from "../ui/Icon";
 import { TopicIcon } from "../ui/bits";
+import { SettlementPanel } from "./SettlementPanel";
 
 const C = { bg: "bg-[#1C2027]", line: "border-[#2B3039]", mute: "text-[#969DA8]", field: "bg-[#15181E]" };
 const EXPIRY = [["none", "No expiry", 0], ["1h", "1 hour", 3_600_000], ["24h", "24 hours", 86_400_000], ["7d", "7 days", 7 * 86_400_000]] as const;
 const WHOLE = ONE; // 1 whole share / collateral unit in base units
-const floorLot = (v: bigint) => (v / QUANTITY_LOT) * QUANTITY_LOT;
 
 /** Compact ticket. Controlled by the page so the order book, ticket and portfolio agree on outcome, side and selected offer.
  *  Market mode = fill one specific executable offer (the best, or the one the user picked). Limit mode = rest a new offer. */
-export function TradeTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; value: TicketValue; onChange: (p: Partial<TicketValue>) => void }) {
-  const { adapter, account, accountId, accountStatus, session, setConnectOpen, showToast, wrongNetwork, refresh, now } = useApp();
+export function TradeTicket(props: { m: Market; book: Offer[]; value: TicketValue; onChange: (p: Partial<TicketValue>) => void; onManage?: () => void }) {
+  // Which screen to show is decided by the contract's market status, not by the clock.
+  return props.m.status === "open" ? <OpenTicket {...props} /> : <SettlementPanel m={props.m} onManage={props.onManage} />;
+}
+
+function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; value: TicketValue; onChange: (p: Partial<TicketValue>) => void }) {
+  const { adapter, account, accountId, accountStatus, session, setConnectOpen, showToast, wrongNetwork, refresh, now, deployment } = useApp();
+  const router = useRouter();
   const { side, outcome, mode } = value;
+  const L = adapter.limits;
+  const floorLot = (v: bigint) => (v / L.lot) * L.lot;
   const [qtyS, setQtyS] = useState("");
   const [amountS, setAmountS] = useState("");
   const [priceS, setPriceS] = useState("");
@@ -35,30 +44,35 @@ export function TradeTicket({ m, book, value, onChange }: { m: Market; book: Off
   const connected = session.kind !== "none";
   const held = account?.positions.find((p) => p.marketId === m.id && p.outcome === outcome)?.qty ?? 0n; // available, unreserved
   const avail = account?.available ?? 0n;
-  const maxOffers = account?.maxOpenOffers ?? MAX_OPEN_OFFERS;
+  const maxOffers = account?.maxOpenOffers ?? L.maxOpenOffers;
   const { offer, gone, candidates } = resolveOffer(book, value, accountId);
 
   // Executable quotes per outcome and side, each from its own book. Never derived from one another.
   const quote = (o: Outcome) => takeCandidates(book, o, side, accountId)[0]?.price ?? null;
 
   const isMarketBuy = mode === "take" && side === "buy";
-  const pr = parsePrice(priceS);
+  const pr = parsePrice(priceS, L);
   const amount = tryParseUnits(amountS);
   // Market buy: spend a budget on the bound offer. Shares = floor(budget / price) rounded down to the lot.
   const marketShares = isMarketBuy && offer && amount.ok ? floorLot((amount.value * ONE) / offer.price) : 0n;
-  const q = isMarketBuy ? { ok: true as const, value: marketShares } : parseQuantity(qtyS, { min: mode === "limit" ? MIN_ORDER_QUANTITY : undefined });
+  const q = isMarketBuy ? { ok: true as const, value: marketShares } : parseQuantity(qtyS, { min: mode === "limit" ? L.minOrder : undefined, limits: L });
   const qty = q.ok ? q.value : 0n;
   const unit = mode === "take" ? offer?.price ?? null : pr.ok ? pr.value : null;
   const total = unit != null && qty > 0n ? exactCost(unit, qty) : null;
   const crossing = mode === "limit" && pr.ok && candidates.length > 0 && (side === "buy" ? pr.value >= candidates[0].price : pr.value <= candidates[0].price);
 
+  const live = adapter.id === "near";
+  const needsSetup = live && !!account && (account.registered === false || account.tokenRegistered === false);
   let block: string | null = null;
   if (m.status !== "open") block = "Market closed";
+  else if (live && deployment.state === "error") block = "Trading unavailable";
+  else if (live && deployment.state !== "ok") block = "Verifying deployment…";
   else if (!connected) block = null;
   else if (wrongNetwork) block = "Wrong network";
   else if (!caps.trading) block = "Trading unavailable";
   else if (accountStatus === "loading") block = "Loading balance…";
   else if (accountStatus === "error") block = "Balance unavailable";
+  else if (needsSetup) block = null; // handled below: the button sends the user to account setup
   else if (mode === "take" && gone) block = "Offer no longer available";
   else if (mode === "take" && !offer) block = "No available offers";
   else if (mode === "limit" && !pr.ok) block = priceS ? pr.error : "Enter a price";
@@ -91,16 +105,18 @@ export function TradeTicket({ m, book, value, onChange }: { m: Market; book: Off
     }
   };
 
-  const primary = !connected
+  const primary = !connected && !block
     ? { text: "Connect wallet", disabled: false, onClick: () => setConnectOpen(true) }
+    : connected && needsSetup && !block
+    ? { text: "Set up account to trade", disabled: false, onClick: () => router.push("/funds") }
     : block ? { text: block, disabled: true, onClick: () => {} }
     : { text: busy ? "Working…" : label, disabled: busy, onClick: () => void submit() };
 
   // ---- shortcuts ----
   const stepPrice = (dir: 1 | -1) => {
     const base = pr.ok ? pr.value : quote(outcome) ?? 500_000n;
-    const next = base + BigInt(dir) * PRICE_TICK;
-    setPriceS(formatUnits(next < MIN_PRICE ? MIN_PRICE : next > MAX_PRICE ? MAX_PRICE : next, 2, 2)); edit();
+    const next = base + BigInt(dir) * L.tick;
+    setPriceS(formatUnits(next < L.minPrice ? L.minPrice : next > L.maxPrice ? L.maxPrice : next, 2, 2)); edit();
   };
   const addShares = (whole: number) => {
     const cur = q.ok ? qty : 0n;
@@ -174,10 +190,10 @@ export function TradeTicket({ m, book, value, onChange }: { m: Market; book: Off
               <div className="flex items-center justify-between gap-3">
                 <span className={`text-sm ${C.mute}`}>Limit price</span>
                 <div className={`flex h-10 items-center rounded-lg ${C.field} focus-within:ring-1 focus-within:ring-brand`}>
-                  <button type="button" aria-label="Decrease price by 0.01" onClick={() => stepPrice(-1)} className={`h-10 w-9 text-lg ${C.mute} hover:text-fg`}>−</button>
+                  <button type="button" aria-label={`Decrease price by ${formatUnits(L.tick, 2, 6)}`} onClick={() => stepPrice(-1)} className={`h-10 w-9 text-lg ${C.mute} hover:text-fg`}>−</button>
                   <input id="limit-price" inputMode="decimal" value={priceS} placeholder="0.50" aria-label="Limit price" aria-invalid={!!priceS && !pr.ok} onChange={(e) => { setPriceS(e.target.value); edit(); }}
                     className="bare w-16 bg-transparent text-center text-base font-semibold outline-none placeholder:text-[#4b525c]" />
-                  <button type="button" aria-label="Increase price by 0.01" onClick={() => stepPrice(1)} className={`h-10 w-9 text-lg ${C.mute} hover:text-fg`}>+</button>
+                  <button type="button" aria-label={`Increase price by ${formatUnits(L.tick, 2, 6)}`} onClick={() => stepPrice(1)} className={`h-10 w-9 text-lg ${C.mute} hover:text-fg`}>+</button>
                 </div>
               </div>
               {priceS && !pr.ok && <p className="-mt-2 text-right text-xs text-no" role="alert">{pr.error}</p>}
@@ -285,6 +301,7 @@ export function TradeTicket({ m, book, value, onChange }: { m: Market; book: Off
             </div>
           )}
 
+          {needsSetup && <p role="status" className="rounded-lg bg-[#15181E] px-3 py-2 text-xs text-[#969DA8]" data-testid="setup-needed">Before trading you must register {account?.registered === false ? "with the market" : ""}{account?.registered === false && account?.tokenRegistered === false ? " and " : ""}{account?.tokenRegistered === false ? `with the ${sym} token` : ""}, then deposit collateral. Both steps are on the Funds page.</p>}
           {wrongNetwork && <p role="alert" className="rounded-lg bg-no-bg/50 px-3 py-2 text-xs text-no">This wallet looks like a mainnet account but the app is set to testnet. Switch your wallet to testnet.</p>}
           <TransactionStatus tx={tx} demo={demo} />
           <button type="button" disabled={primary.disabled} onClick={primary.onClick}

@@ -10,8 +10,10 @@ const RANGES = [
 const fmtTime = (t: number, long: boolean) =>
   new Intl.DateTimeFormat("en-US", long ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric" }).format(t);
 
-export function ProbabilityChart({ points, loading, error, compact = false, height = 260, demo = false, showRanges = true }: {
+export function ProbabilityChart({ points, loading, error, compact = false, height = 260, demo = false, showRanges = true, unavailable }: {
   points: HistoryPoint[] | null; loading?: boolean; error?: string | null; compact?: boolean; height?: number; demo?: boolean; showRanges?: boolean;
+  /** Set when the data source has no history at all (live mode without an indexer). */
+  unavailable?: string;
 }) {
   const [range, setRange] = useState<(typeof RANGES)[number]["key"]>(compact ? "All" : "All");
   const [width, setWidth] = useState(600);
@@ -36,6 +38,9 @@ export function ProbabilityChart({ points, loading, error, compact = false, heig
 
   if (loading) return <div aria-hidden className="skeleton w-full" style={{ height }} />;
   if (error) return <div role="alert" style={{ height }} className="grid place-items-center rounded-xl border border-line text-center text-mute"><p>Price history is unavailable.<br /><span className="text-xs">{error}</span></p></div>;
+  if (unavailable && (!points || points.length < 2)) {
+    return <div role="status" style={{ height }} className="grid place-items-center rounded-xl border border-dashed border-line px-4 text-center text-mute" data-testid="history-unavailable"><p>Price history unavailable.<br /><span className="text-xs">{unavailable}</span></p></div>;
+  }
   if (!points || points.length < 2) {
     return <div style={{ height }} className="grid place-items-center rounded-xl border border-dashed border-line px-4 text-center text-mute"><p>No price history yet.<br /><span className="text-xs">A chart appears after the first trades.</span></p></div>;
   }

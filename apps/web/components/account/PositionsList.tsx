@@ -40,9 +40,9 @@ export function PositionsList({ positions }: { positions: Position[] }) {
             <Cell k="Est. value" v={est == null ? "No price" : money(est, sym)} />
             <div className="flex gap-2 md:justify-end">
               <Link href={`/markets/${p.marketId}?outcome=${p.outcome}`} className="inline-flex min-h-10 items-center rounded-lg border border-line px-3 text-sm font-semibold hover:bg-white/10">{m?.status === "open" ? "Sell" : "View market"}</Link>
-              {m?.status === "resolved" && adapter.capabilities.redeem && (
-                <Btn disabled={busy || lost} onClick={() => void run((r) => adapter.redeem(p.marketId, r)).then((ok) => ok && showToast("Demo redemption completed"))}>{lost ? "No payout" : "Redeem"}</Btn>
-              )}
+              {m?.status === "resolved" && adapter.capabilities.redeem && (adapter.id === "near"
+                ? <Link href={`/markets/${p.marketId}`} className={`inline-flex min-h-10 items-center rounded-lg px-3 text-sm font-semibold ${lost ? "pointer-events-none bg-elev text-mute" : "bg-brand text-white"}`}>{lost ? "No payout" : "Review & redeem"}</Link>
+                : <Btn disabled={busy || lost} onClick={() => void run((r) => adapter.redeem(p.marketId, r)).then((ok) => ok && showToast("Demo redemption completed"))}>{lost ? "No payout" : "Redeem"}</Btn>)}
             </div>
           </li>
         );

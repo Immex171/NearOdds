@@ -7,7 +7,7 @@ import { DEMO_ACCOUNT, DEMO_NOW } from "./demo/data";
 import { DemoAdapter } from "./demo/adapter";
 import { NearAdapter } from "./near/adapter";
 import { wallet } from "./wallet";
-import type { AccountState, DataAdapter, Market } from "./types";
+import type { AccountState, DataAdapter, Deployment, Market } from "./types";
 
 type Session = { kind: "none" } | { kind: "demo" } | { kind: "wallet"; accountId: string };
 
@@ -33,6 +33,10 @@ interface Ctx {
   disconnect: () => Promise<void>;
   resetDemo: () => void;
   liveConfigured: boolean;
+  /** Live deployment verification (get_config / ft_metadata / get_market agreement). Transactions stay off until ok. */
+  deployment: Deployment;
+  /** Leave demo mode and return to live testnet data. */
+  exitDemo: () => void;
   /** Heuristic: a mainnet-style (.near) account while the app is configured for testnet. */
   wrongNetwork: boolean;
   rejectNext: boolean;
@@ -69,7 +73,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [liveNow, setLiveNow] = useState(() => Date.now());
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const adapter: DataAdapter = session.kind === "wallet" ? near : demo;
+  // Live testnet data is the default whenever the deployment is configured; Demo is only ever an explicit choice.
+  const adapter: DataAdapter = session.kind === "demo" || !liveConfigured ? demo : near;
   const accountId = session.kind === "demo" ? DEMO_ACCOUNT : session.kind === "wallet" ? session.accountId : null;
 
   useEffect(() => {
@@ -79,7 +84,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (id) { setSession({ kind: "wallet", accountId: id }); }
       else setSession((s) => (s.kind === "wallet" ? { kind: "none" } : s));
     });
-    if (liveConfigured) void wallet.restore();
+    if (liveConfigured) { void near.init(); void wallet.restore(); }
     // Test hook (opt-in): lets browser tests simulate an offer disappearing. No effect unless the flag is set.
     if (localStorage.getItem("nearodds:debug") === "1") (window as unknown as { __demo?: DemoAdapter }).__demo = demo;
     return off;
@@ -138,7 +143,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSession({ kind: "none" });
     },
     resetDemo: () => { demo.reset(); showToast("Demo reset to its initial state"); },
-    liveConfigured, toast, showToast,
+    liveConfigured, toast, showToast, deployment: near.deployment,
+    exitDemo: () => { store.set("nearodds:session", ""); setSession({ kind: "none" }); },
     wrongNetwork: session.kind === "wallet" && config.network === "testnet" && session.accountId.endsWith(".near"),
     rejectNext, setRejectNext: (v: boolean) => { demo.setRejectNext(v); setRejectNext(v); },
   }), [rejectNext, adapter, session, accountId, markets, marketsError, account, accountError, refresh, version, bookmarks, toggleBookmark, connectOpen, helpOpen, toast, showToast, liveNow]);

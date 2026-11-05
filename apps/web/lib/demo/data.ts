@@ -107,7 +107,7 @@ export function demoHistory(m: Market): HistoryPoint[] | null {
   const target = Number(m.lastYes) / 1_000_000;
   const start = m.prevYes != null ? Number(m.prevYes) / 1_000_000 : target;
   const pts: HistoryPoint[] = [];
-  const first = Math.max(m.createdAt, end - 30 * D);
+  const first = Math.max(m.createdAt ?? end - 30 * D, end - 30 * D);
   const steps: number[] = [];
   for (let t = first; t < end - D; t += H) steps.push(t);
   for (let t = Math.max(first, end - D); t <= end; t += 5 * 60_000) steps.push(t);
@@ -148,7 +148,7 @@ export function demoOffers(): Offer[] {
 export function demoActivity(m: Market): ActivityItem[] {
   const r = rng("act" + m.id);
   const items: ActivityItem[] = [];
-  if (m.lastYes == null) return [{ id: m.id + "-c", t: m.createdAt, text: "Market created. No trades yet.", kind: "event" }];
+  if (m.lastYes == null) return [{ id: m.id + "-c", t: m.createdAt ?? NOW, text: "Market created. No trades yet.", kind: "event" }];
   for (let i = 0; i < 8; i++) {
     const out: Outcome = r() > 0.5 ? "YES" : "NO";
     const q = 5 + Math.floor(r() * 40);
@@ -156,7 +156,7 @@ export function demoActivity(m: Market): ActivityItem[] {
     items.push({ id: `${m.id}-t${i}`, t: NOW - (i * 3 + Math.floor(r() * 3)) * H, kind: "trade",
       text: `maker${Math.floor(r() * 90 + 10)}.testnet bought ${q} ${out} at ${(px / 100).toFixed(2)}` });
   }
-  items.push({ id: m.id + "-c", t: m.createdAt, text: "Market created.", kind: "event" });
+  items.push({ id: m.id + "-c", t: m.createdAt ?? NOW, text: "Market created.", kind: "event" });
   if (m.status === "resolved") items.unshift({ id: m.id + "-r", t: m.closesAt + H, text: `Resolved ${m.resolution.outcome}.`, kind: "event" });
   return items.sort((a, b) => b.t - a.t);
 }

@@ -3,14 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/sync-deployment.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/sync-deployment.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "node tests/e2e/journey.mjs"
+    "e2e": "node tests/e2e/journey.mjs",
+    "deployment:sync": "node scripts/sync-deployment.mjs",
+    "deployment:check": "node scripts/sync-deployment.mjs --check --online"
   },
   "dependencies": {
     "@hot-labs/near-connect": "^0.12.0",

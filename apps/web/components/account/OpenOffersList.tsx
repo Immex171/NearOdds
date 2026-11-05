@@ -6,10 +6,11 @@ import { useTx } from "@/lib/hooks";
 import { priceStr } from "@/lib/format";
 import type { OpenOffer } from "@/lib/types";
 import { Badge, Btn, EmptyState } from "../ui/bits";
+import { TransactionStatus } from "./TransactionStatus";
 
 export function OpenOffersList({ offers }: { offers: OpenOffer[] }) {
   const { markets, adapter, showToast } = useApp();
-  const { run, busy } = useTx();
+  const { tx, run, busy } = useTx();
   if (!offers.length) return <EmptyState title="No open offers" body="Limit offers you place will rest here until someone takes them." />;
   return (
     <ul className="divide-y divide-line overflow-hidden rounded-[14px] border border-line bg-card">
@@ -23,11 +24,12 @@ export function OpenOffersList({ offers }: { offers: OpenOffer[] }) {
             </div>
             <Cell k="Price" v={`${priceStr(o.price)} ${adapter.symbol}`} />
             <Cell k="Remaining" v={formatUnits(o.qty, 0, 2)} />
-            <Cell k="Status" v="Open" />
+            <Cell k="Status" v={o.fillable === false ? "Not fillable" : "Open"} />
             <div className="md:text-right">
-              {adapter.capabilities.cancelOffers && (
-                <Btn variant="danger" disabled={busy} onClick={() => void run((r) => adapter.cancelOffer(o.id, r)).then((ok) => ok && showToast("Demo offer cancelled"))}>Cancel</Btn>
-              )}
+              {adapter.capabilities.cancelOffers && m?.status !== "resolved" ? (
+                <Btn variant="danger" disabled={busy} onClick={() => void run((r) => adapter.cancelOffer(o.id, r)).then((ok) => ok && showToast(adapter.id === "demo" ? "Demo offer cancelled" : "Offer cancelled"))}>Cancel</Btn>
+              ) : m?.status === "resolved" ? <span className="text-xs text-mute">Released when you redeem</span> : null}
+              {tx.phase !== "idle" && <div className="mt-2 text-left"><TransactionStatus tx={tx} demo={adapter.id === "demo"} /></div>}
             </div>
           </li>
         );

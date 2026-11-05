@@ -7,14 +7,14 @@ import type { Market } from "@/lib/types";
 
 const catColor: Record<string, string> = {
   Crypto: "from-[#5265ff] to-[#2a3699]", Sports: "from-[#e8913a] to-[#8a4a12]", Politics: "from-[#8a5cf0] to-[#4a2c96]",
-  Economy: "from-[#2fb4a6] to-[#145f57]", Technology: "from-[#d9568f] to-[#7d2551]",
+  Economy: "from-[#2fb4a6] to-[#145f57]", Technology: "from-[#d9568f] to-[#7d2551]", _: "from-[#3a4150] to-[#1f242d]",
 };
 
 export function TopicIcon({ market, size = 40 }: { market: Pick<Market, "icon" | "category">; size?: number }) {
   return (
     <span aria-hidden style={{ width: size, height: size, fontSize: size * 0.42 }}
-      className={`grid shrink-0 place-items-center rounded-xl bg-gradient-to-br font-semibold text-white ${catColor[market.category]}`}>
-      {market.icon || market.category[0]}
+      className={`grid shrink-0 place-items-center rounded-xl bg-gradient-to-br font-semibold text-white ${catColor[market.category ? market.category : "_"]}`}>
+      {market.icon || market.category?.[0] || "?"}
     </span>
   );
 }

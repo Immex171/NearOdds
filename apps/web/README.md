@@ -7,12 +7,24 @@ Next.js (App Router) + React + TypeScript (strict) + Tailwind CSS 4. Package man
 ```bash
 pnpm install                 # from the repo root
 cd apps/web
-pnpm dev                     # http://localhost:3000  (demo mode, no env needed)
+pnpm dev                     # http://localhost:3000 — LIVE testnet data by default (see below)
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
-pnpm start -p 3000 &         # then: pnpm e2e   (Playwright-core + system Chrome, demo journey)
+pnpm start -p 3000 &         # then: pnpm e2e (demo journey) / node tests/e2e/live.mjs (live, read-only)
 ```
 
-Live testnet mode is optional: copy `.env.example` to `.env.local` and fill `NEXT_PUBLIC_MARKET_CONTRACT_ID`, `NEXT_PUBLIC_TOKEN_CONTRACT_ID`, `NEXT_PUBLIC_MARKET_ID`. Nothing is hardcoded.
+### Deployment configuration
+
+Nothing is hardcoded and you do not write env files by hand. `pnpm dev` and `pnpm build` first run
+`scripts/sync-deployment.mjs`, which derives `NEXT_PUBLIC_NETWORK`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_MARKET_CONTRACT_ID`,
+`NEXT_PUBLIC_TOKEN_CONTRACT_ID` and `NEXT_PUBLIC_MARKET_ID` from `../../deployments/testnet-demo.json`, validates them
+(testnet accounts, token/market/decimals/cutoff agree, schema 3, manifest verified) and writes `apps/web/.env` (git-ignored).
+An explicit env value that disagrees with the manifest fails the run. `pnpm deployment:check` additionally compares the
+manifest with the chain (`get_config`, `ft_metadata`, `get_market`, trading params and both code hashes).
+
+At runtime (`lib/near/deployment.ts`) the app re-checks that `get_config`, `get_market`, `ft_metadata` and the configured IDs
+agree (schema 3, collateral token, market id, resolver, 6 decimals). **If they do not, transactions stay disabled** and the header says why.
+The token symbol and all trading limits (tick, lot, min order, price bounds, max offers, storage costs) come from the chain.
+Unset the three contract IDs to build a demo-only app.
 
 ## Routes
 
@@ -28,21 +40,34 @@ Live testnet mode is optional: copy `.env.example` to `.env.local` and fill `NEX
 
 ## Demo vs live
 
+Live testnet data is the default whenever the deployment is configured. **Demo mode is only entered explicitly** ("Use demo account"), shows an orange banner and `TEST` labels, and can be left with "Switch to live testnet".
+
 | Feature | Demo adapter | NEAR adapter (contract schema v3) |
 | - | - | - |
-| Markets, categories, search, filters, sort, bookmarks | sample data | the one real market from `get_market` (status, resolver, resolution) |
-| Order book | simulated, per-offer ids | **live**: `list_offers` for both outcomes/sides, read at one pinned final block |
-| Take (partial) / limit offers / cancel | simulated, balances stay consistent | **live**: `fill_offer`, `create_offer`, `cancel_offer` (not exercised against a deployment) |
-| Deposit / withdraw / split / merge / register | simulated | **live** (`ft_transfer_call`, `withdraw`, `split_position`, `merge_positions`, `storage_deposit`) |
-| Redeem | simulated | **live**: `get_redemption_preview` then `redeem` (credits internal collateral; withdraw afterwards) |
-| Resolve market | n/a | not in the UI (resolver-only; not a participant action) |
-| Prices, headline probability, chart history, activity | simulated | **unavailable**: no price/trade source or indexer exists |
-| Wrong-network detection | n/a | heuristic only (`.near` account while configured for testnet) |
+| Market | 20 sample markets with categories, volume, history | the one real market from `get_market`. **No category, creation date, volume or history is shown: the contract has none** |
+| Order book and quotes | simulated | **live** `list_offers` for both outcomes/sides, every page, read at one pinned final block, sorted by price; fills use the offer's real id |
+| Take (partial) / limit offers / cancel | simulated | `fill_offer`, `create_offer`, `cancel_offer` (100 Tgas, 1 yoctoNEAR) |
+| Registration | n/a | token `storage_deposit` (0.00125 NEAR, read from `storage_balance_bounds`) and market `storage_deposit` (`storage_cost_per_account`, 0.04096 NEAR), each a separate wallet transaction |
+| Deposit | simulated | token `ft_transfer_call` to the market, `msg` from `get_config`, 1 yoctoNEAR, **300 Tgas**; result = the amount the market accepted (a refund is reported as such) |
+| Withdraw | simulated | `withdraw` (100 Tgas); `Pending` is shown as **unconfirmed** and is never resent |
+| Split / merge | simulated | `split_position` / `merge_positions`, gated by the contract's `split_open` / `merge_open` flags |
+| Screens by status | by sample status | decided by `get_market().status`: **Open** = trade ticket; **AwaitingResolution** = "Trading has ended" (cancel, withdraw and merge stay available); **Resolved** = result + redemption preview + Redeem |
+| Redeem | simulated | `get_redemption_preview` then `redeem`; credits **internal** available collateral. Withdraw is a separate step |
+| Price, headline probability, chart, activity | simulated | **unavailable** (explicitly labelled): no trade source or indexer exists |
+| Funding tNOC | n/a | owner-operated: only the token owner can mint, with `scripts/testnet-mint.sh`. **There is no public faucet.** The Funds page shows the exact command for your account |
 
-Trading rules enforced in the UI (and by the contract): 0.01 price tick (0.01 to 0.99), 100-base-unit lot (0.0001 share),
-0.01-share minimum for limit offers, at most 10 open offers, no self-fills, cancellation always allowed. A missing offer
-means "no active offer record" (filled, cancelled or released), not a specific outcome.
+Every live transaction is signed in the user's wallet. After the wallet returns, the app asks the chain for the **final** outcome
+(`tx`, `wait_until: FINAL`), fails on any failed receipt, and re-reads contract state before saying "confirmed".
+
+Trading rules enforced in the UI (and by the contract): tick/lot/min-order/price bounds from `get_config().trading`, at most
+`max_open_offers_per_account` open offers, no self-fills. A missing offer means "no active offer record" (filled, cancelled or released).
+
+## Tests
+
+- `pnpm test` — unit tests: amounts, quoting, limits, manifest derivation/validation, deployment agreement, market mapping, receipt parsing, and `tests/adapter.test.ts` (every transaction's receiver, method, args, deposit and gas; failure/pending/refund handling; pagination at one block) with a mocked wallet and RPC.
+- `NEARODDS_LIVE=1 pnpm vitest run tests/chain-replay.live.test.ts` — read-only: replays real testnet transactions from the manifest through the parsing code and reads the real book and accounts.
+- `pnpm e2e` — demo journey in Chrome (build with the three contract IDs empty, see the report in `docs/frontend-integration.md`); `node tests/e2e/live.mjs` — live testnet, read-only, plus **fixture** Awaiting/Resolved screens (real RPC responses with `get_market` rewritten).
 
 ## Not verified
 
-Wallet behaviour on a real testnet, and the NEAR adapter against a live deployment, were **not** exercised (no deployed contract available here). The adapter's view/call shapes follow `docs/contract-interface.md`.
+A funded-wallet journey (register, deposit, trade, limit offer, cancel, split/merge, withdraw, redeem) against the deployed contracts through a real wallet has **not** been run from here. See `docs/frontend-integration.md`.

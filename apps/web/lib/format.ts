@@ -49,7 +49,8 @@ export const isTradable = (m: Market) => m.status === "open";
 export function nearStr(yocto: bigint): string {
   const E = 10n ** 24n;
   const whole = yocto / E;
-  const frac = (yocto % E).toString().padStart(24, "0").slice(0, 4).replace(/0+$/, "");
+  // Exact, never rounded: 40960000000000000000000 is "0.04096 NEAR", not "0.0409".
+  const frac = (yocto % E).toString().padStart(24, "0").replace(/0+$/, "");
   return `${whole}${frac ? "." + frac : ""} NEAR`;
 }
 
@@ -57,6 +58,14 @@ export function nearStr(yocto: bigint): string {
 export function dateTimeUtc(ts: number): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(ts) + " UTC";
 }
+
+/** The same instant in Lagos time (WAT, UTC+1), for markets whose rules are written in WAT. */
+export function dateTimeWat(ts: number): string {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Africa/Lagos" }).format(ts) + " WAT";
+}
+
+/** "Nov 11, 2026, 11:00 PM UTC (Nov 12, 2026, 12:00 AM WAT)" */
+export const cutoffLabel = (ts: number) => `${dateTimeUtc(ts)} (${dateTimeWat(ts)})`;
 
 /** Compact label for a market, e.g. "Will NEAR close above $10 on December 31, 2026?" -> "NEAR above $10". */
 export function shortTitle(q: string): string {

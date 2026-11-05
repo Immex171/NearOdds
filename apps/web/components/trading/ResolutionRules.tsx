@@ -1,14 +1,17 @@
 "use client";
-import { dateTimeUtc, statusLabel } from "@/lib/format";
+import { useApp } from "@/lib/app-context";
+import { cutoffLabel, dateTimeUtc, statusLabel } from "@/lib/format";
 import type { Market } from "@/lib/types";
 
 export function ResolutionRules({ m }: { m: Market }) {
+  const { adapter } = useApp();
+  const live = adapter.id === "near";
   const r = m.resolution;
   const obs = r.observation ?? { at: null, text: "As defined in the rules" };
   const src = typeof r.source === "string" ? { name: r.source, field: "" } : r.source ?? { name: "Not provided", field: "" };
   const rows: [string, React.ReactNode][] = [
-    ["Trading closes", <>{dateTimeUtc(m.closesAt)}<span className="block text-xs text-mute">Last moment users can trade.</span></>],
-    ["Price observation", <>{obs.at ? dateTimeUtc(obs.at) : "No single instant"}<span className="block text-xs text-mute">{obs.text}</span></>],
+    ["Trading closes", <>{live ? cutoffLabel(m.closesAt) : dateTimeUtc(m.closesAt)}<span className="block text-xs text-mute">The on-chain cutoff. After this, no one can create or fill offers. It is not the observation period.</span></>],
+    [obs.at ? "Price observation" : "Observation period", <>{obs.at ? dateTimeUtc(obs.at) : obs.text}{obs.at && <span className="block text-xs text-mute">{obs.text}</span>}{!obs.at && live && <span className="block text-xs text-mute">The real-world period the result is read from, as stated in the market’s rules.</span>}</>],
     ["Resolution source", <>{src.name}<span className="block text-xs text-mute">{src.field}</span></>],
     ["Resolver", r.resolver],
     ["Status", r.outcome ? `${statusLabel[m.status]}: ${r.outcome}` : statusLabel[m.status]],

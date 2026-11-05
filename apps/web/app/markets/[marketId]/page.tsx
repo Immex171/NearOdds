@@ -4,7 +4,7 @@ import { use, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useAdapterData, useApp } from "@/lib/app-context";
-import { dateTimeUtc, money, movement, priceStr, statusLabel, yesPct } from "@/lib/format";
+import { cutoffLabel, dateTimeUtc, money, movement, priceStr, statusLabel, yesPct } from "@/lib/format";
 import { bestPrice } from "@/lib/quote";
 import { resolveOffer, type TicketValue } from "@/lib/trading";
 import { useMediaQuery } from "@/lib/hooks";
@@ -37,6 +37,7 @@ function Detail({ id }: { id: string }) {
   const m = market.data;
   if (!m) return <EmptyState title="Market not found" body="This market doesn’t exist in the current data source." action={<Link href="/markets" className="font-semibold text-brand">Browse markets</Link>} />;
 
+  const live = adapter.id === "near";
   const pct = yesPct(m);
   const mv = movement(m);
   const copy = async () => {
@@ -49,7 +50,7 @@ function Detail({ id }: { id: string }) {
     if (!desktop) setSheet(true);
   };
   const selected = resolveOffer(book.data ?? [], ticket, account?.accountId).offer;
-  const ticketEl = <TradeTicket m={m} book={book.data ?? []} value={ticket} onChange={patch} />;
+  const ticketEl = <TradeTicket m={m} book={book.data ?? []} value={ticket} onChange={patch} onManage={() => setManage(true)} />;
   const yesAsk = bestPrice(book.data ?? [], "YES", "buy");
   const yesBid = bestPrice(book.data ?? [], "YES", "sell");
   const holds = account?.positions.filter((p) => p.marketId === m.id) ?? [];
@@ -57,7 +58,7 @@ function Detail({ id }: { id: string }) {
     <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="min-w-0 space-y-4">
         <nav aria-label="Breadcrumb" className="text-xs text-mute">
-          <Link href="/markets" className="hover:text-fg">Markets</Link> / <Link href={`/markets?category=${m.category}`} className="hover:text-fg">{m.category}</Link>
+          <Link href="/markets" className="hover:text-fg">Markets</Link>{m.category && <> / <Link href={`/markets?category=${m.category}`} className="hover:text-fg">{m.category}</Link></>}
         </nav>
         <header className="flex items-start gap-3">
           <TopicIcon market={m} size={48} />
@@ -65,8 +66,8 @@ function Detail({ id }: { id: string }) {
             <h1 className="text-2xl font-semibold leading-tight md:text-[28px]">{m.question}</h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-mute">
               <Badge tone={tone}>{statusLabel[m.status]}</Badge>
-              <span>{m.status === "open" ? "Closes" : "Closed"} {dateTimeUtc(m.closesAt)}</span>
-              <span>Volume <b className="text-fg">{money(m.volume, adapter.symbol, 0)}</b></span>
+              <span>Trading {m.status === "open" ? "closes" : "closed"} {live ? cutoffLabel(m.closesAt) : dateTimeUtc(m.closesAt)}</span>
+              <span>Volume <b className="text-fg" data-testid="volume">{m.volume == null ? "unavailable" : money(m.volume, adapter.symbol, 0)}</b></span>
             </div>
           </div>
           <div className="flex shrink-0">
@@ -79,18 +80,19 @@ function Detail({ id }: { id: string }) {
           <div className="mb-3 flex flex-wrap items-end gap-x-6 gap-y-3">
             <div>
               <p className="text-xs text-mute">
-                <Tooltip text="Headline probability = price of the most recent YES trade (a NO trade is shown as its YES-equivalent). It is a display value, not an executable price, and the ticket never uses it.">Chance of YES ⓘ</Tooltip>
+                <Tooltip text={live ? "The contract does not record trades, so there is no last-trade probability. Use the best bid and ask below, which are real executable offers." : "Headline probability = price of the most recent YES trade (a NO trade is shown as its YES-equivalent). It is a display value, not an executable price, and the ticket never uses it."}>Chance of YES ⓘ</Tooltip>
               </p>
               <p className="text-3xl font-semibold text-yes">{pct == null ? "—" : `${pct}%`}</p>
             </div>
-            {mv ? <p className={`pb-1 text-sm font-medium ${mv.delta >= 0 ? "text-yes" : "text-no"}`}>{mv.label}</p> : <p className="pb-1 text-sm text-mute">{pct == null ? "No trades yet" : "Price movement unavailable"}</p>}
+            {mv ? <p className={`pb-1 text-sm font-medium ${mv.delta >= 0 ? "text-yes" : "text-no"}`}>{mv.label}</p> : <p className="pb-1 text-sm text-mute">{pct == null ? (live ? "No trade history available" : "No trades yet") : "Price movement unavailable"}</p>}
             <dl className="ml-auto grid grid-cols-3 gap-x-5 text-right text-xs">
-              <div><dt className="text-mute">Last YES trade</dt><dd className="text-sm font-semibold">{priceStr(m.lastYes)} {adapter.symbol}</dd></div>
+              <div><dt className="text-mute">Last YES trade</dt><dd className="text-sm font-semibold">{m.lastYes == null ? "—" : `${priceStr(m.lastYes)} ${adapter.symbol}`}</dd></div>
               <div><dt className="text-mute">Best YES ask</dt><dd className="text-sm font-semibold text-no">{priceStr(yesAsk)} {adapter.symbol}</dd></div>
               <div><dt className="text-mute">Best YES bid</dt><dd className="text-sm font-semibold text-yes">{priceStr(yesBid)} {adapter.symbol}</dd></div>
             </dl>
           </div>
-          <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} demo={adapter.id === "demo"} height={desktop ? 300 : 220} />
+          <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} demo={adapter.id === "demo"} height={desktop ? 300 : 220}
+            unavailable={live ? "The contract records no trade history and there is no indexer yet. Current prices come from the order book below." : undefined} />
         </section>
 
         {holds.length > 0 && (
@@ -103,7 +105,7 @@ function Detail({ id }: { id: string }) {
         <OffersPanel book={book.data} market={m} account={account?.accountId ?? null} loading={book.loading} tradable={m.status === "open"}
           onPick={onPick} selectedId={ticket.mode === "take" ? selected?.id ?? null : null} outcome={ticket.outcome} setOutcome={(o) => patch({ outcome: o, offerId: null })} />
         <ResolutionRules m={m} />
-        <ActivityList items={act.data} loading={act.loading} />
+        <ActivityList items={act.data} loading={act.loading} unavailable={live ? "Trade activity needs an indexer, which does not exist yet. Your own offers and balances are always read live from the contract." : undefined} />
         <Btn variant="outline" onClick={() => setManage(true)} className="w-full sm:w-auto">Manage shares</Btn>
       </div>
 

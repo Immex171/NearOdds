@@ -1,8 +1,8 @@
 import { mulPrice } from "../amounts";
-import { MAX_OPEN_OFFERS, MAX_PRICE, MIN_ORDER_QUANTITY, MIN_PRICE, PRICE_TICK, QUANTITY_LOT } from "../trading";
+import { DEFAULT_LIMITS, MAX_OPEN_OFFERS, MAX_PRICE, MIN_ORDER_QUANTITY, MIN_PRICE, PRICE_TICK, QUANTITY_LOT } from "../trading";
 import type {
   AccountState, ActivityItem, Capabilities, CreateOfferRequest, DataAdapter, HistoryPoint, Market, Offer, OpenOffer, Position,
-  TxReporter,
+  RedeemPreview, TxReporter,
 } from "../types";
 import {
   DEMO_ACCOUNT, DEMO_INITIAL, DEMO_NOW, demoActivity, demoHistory, demoInitialOffers, demoInitialPositions, demoMarkets, demoOffers,
@@ -59,6 +59,7 @@ export class DemoAdapter implements DataAdapter {
   label = "Demo";
   symbol = "TEST";
   capabilities = DEMO_CAPABILITIES;
+  limits = DEFAULT_LIMITS;
   private s = load() ?? initial();
   private subs = new Set<() => void>();
   /** Demo-only switch: the next transaction is rejected as if the user declined the wallet prompt. */
@@ -208,7 +209,7 @@ export class DemoAdapter implements DataAdapter {
       this.s.book = this.s.book.filter((x) => x.qty > 0n);
       m.prevYes = m.prevYes ?? m.lastYes;
       m.lastYes = o.outcome === "YES" ? o.price : 1_000_000n - o.price; // display convention: last trade as YES-equivalent
-      m.volume += cost; m.hasHistory = true;
+      m.volume = (m.volume ?? 0n) + cost; m.hasHistory = true;
       this.note(`${o.side === "sell" ? "Bought" : "Sold"} ${Number(qty) / 1e6} ${o.outcome} at ${Number(o.price) / 1e6} (demo)`, o.marketId);
     }, "Demo trade completed");
   }
@@ -247,6 +248,17 @@ export class DemoAdapter implements DataAdapter {
     }, "Demo offer cancelled");
   }
 
+  async redeemPreview(marketId: string): Promise<RedeemPreview | null> {
+    const m = this.s.markets.find((x) => x.id === marketId);
+    if (!m || m.status !== "resolved" || !m.resolution.outcome) return null;
+    const mine = this.s.positions.filter((p) => p.marketId === marketId);
+    const win = mine.filter((p) => p.outcome === m.resolution.outcome).reduce((a, p) => a + p.qty + p.reserved, 0n);
+    const lose = mine.filter((p) => p.outcome !== m.resolution.outcome).reduce((a, p) => a + p.qty + p.reserved, 0n);
+    return {
+      redeemable: win + lose > 0n, outcome: m.resolution.outcome, winningShares: win, losingShares: lose, payout: win,
+      releasedCollateral: 0n, releasedShares: 0n, offersToRelease: 0, availableAfter: this.s.available + win,
+    };
+  }
   redeem(marketId: string, r: TxReporter) {
     return this.run(r, () => {
       const m = this.market(marketId);

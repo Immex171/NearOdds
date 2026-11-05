@@ -21,7 +21,7 @@ export function SearchDialog() {
   const results = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t || !markets) return [];
-    return markets.filter((m) => m.question.toLowerCase().includes(t) || m.category.toLowerCase().includes(t) || m.tag?.toLowerCase() === t).slice(0, 7);
+    return markets.filter((m) => m.question.toLowerCase().includes(t) || m.category?.toLowerCase().includes(t) || m.tag?.toLowerCase() === t).slice(0, 7);
   }, [q, markets]);
 
   useEffect(() => {
@@ -65,7 +65,7 @@ export function SearchDialog() {
               <TopicIcon market={m} size={32} />
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{m.question}</p>
-                <p className="text-xs text-mute">{m.category} · {statusLabel[m.status]}</p>
+                <p className="text-xs text-mute">{m.category ? `${m.category} · ` : ""}{statusLabel[m.status]}</p>
               </div>
             </li>
           ))}

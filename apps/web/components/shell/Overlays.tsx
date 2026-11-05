@@ -11,13 +11,13 @@ export function Overlays() {
         <div className="space-y-3">
           <button onClick={useDemoAccount} className="w-full rounded-xl border border-line bg-elev p-4 text-left hover:border-brand">
             <p className="font-semibold">Use demo account</p>
-            <p className="mt-1 text-mute">Sample markets, a 1,000 TEST wallet and a few positions. Nothing is real and nothing touches a blockchain.</p>
+            <p className="mt-1 text-mute">Demo mode: sample markets, a simulated 1,000 TEST wallet and a few positions. Nothing is real and nothing touches a blockchain.</p>
           </button>
           <button disabled={!liveConfigured} onClick={() => void connectWallet()} className="w-full rounded-xl border border-line p-4 text-left hover:border-brand disabled:cursor-not-allowed disabled:opacity-60">
             <p className="font-semibold">Connect NEAR wallet (testnet)</p>
             <p className="mt-1 text-mute">
-              {liveConfigured ? "Live contract data. Only deposits, complete sets and withdrawals exist on-chain so far; trading is not available."
-                : "Not configured. Set NEXT_PUBLIC_MARKET_CONTRACT_ID, NEXT_PUBLIC_TOKEN_CONTRACT_ID and NEXT_PUBLIC_MARKET_ID (see .env.example)."}
+              {liveConfigured ? "The deployed testnet market. You need a little testnet NEAR for fees and tNOC test collateral (no monetary value). Every transaction is approved in your wallet."
+                : "Not configured. Run `pnpm deployment:sync` to derive the contract IDs from deployments/testnet-demo.json (see .env.example)."}
             </p>
           </button>
         </div>
@@ -28,7 +28,7 @@ export function Overlays() {
           <p><b className="text-fg">Complete sets.</b> 1 collateral token can always be split into 1 YES + 1 NO share, and 1 YES + 1 NO can be merged back into 1 token. This is what keeps every share fully backed.</p>
           <p><b className="text-fg">Offers.</b> You trade by taking an existing offer or placing your own limit offer that waits for a counterparty. Each outcome has its own order book.</p>
           <p><b className="text-fg">Settlement.</b> After trading closes, a named resolver publishes the outcome using the source in the market’s rules. Winning shares redeem for 1 token each; losing shares are worth 0.</p>
-          <p className="rounded-lg bg-elev p-3 text-xs">Currently running on <b className="text-fg">{adapter.id === "demo" ? "demo data" : "the NEAR testnet contract"}</b>. {adapter.id === "demo" ? "All prices, offers and balances are simulated." : "Trading, resolution and redemption are not yet in the deployed contract."} Test tokens have no monetary value.</p>
+          <p className="rounded-lg bg-elev p-3 text-xs">Currently running on <b className="text-fg">{adapter.id === "demo" ? "demo data" : "the NEAR testnet contract"}</b>. {adapter.id === "demo" ? "All prices, offers and balances are simulated." : "Prices come from real offers on the contract. Price history, volume and activity are unavailable until an indexer exists."} Test tokens have no monetary value.</p>
         </div>
         <Btn className="mt-4 w-full" onClick={() => setHelpOpen(false)}>Got it</Btn>
       </Modal>

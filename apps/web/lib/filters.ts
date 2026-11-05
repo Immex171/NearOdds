@@ -61,7 +61,7 @@ export function applyFilters(markets: Market[], f: Filters, now: number, bookmar
     (!f.category || m.category === f.category) &&
     (!q || m.question.toLowerCase().includes(q)) &&
     (!f.saved || bookmarks.includes(m.id)) &&
-    (f.view !== "new" || now - m.createdAt <= 14 * DAY) &&
+    (f.view !== "new" || (m.createdAt != null && now - m.createdAt <= 14 * DAY)) &&
     (skip === "status" || !f.status.length || f.status.some((s) => matchStatus(m, now, s))) &&
     (skip === "period" || !f.period.length || f.period.some((p) => matchPeriod(m, now, p))) &&
     (skip === "tags" || !f.tags.length || (m.tag != null && f.tags.includes(m.tag))));
@@ -71,8 +71,8 @@ export function sortMarkets(ms: Market[], sort: SortKey, now: number): Market[] 
   const live = (m: Market) => (m.status === "open" ? 0 : 1);
   const by: Record<SortKey, (a: Market, b: Market) => number> = {
     trending: (a, b) => b.trendScore - a.trendScore,
-    newest: (a, b) => b.createdAt - a.createdAt,
-    volume: (a, b) => Number(b.volume - a.volume),
+    newest: (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+    volume: (a, b) => Number((b.volume ?? 0n) - (a.volume ?? 0n)),
     closing: (a, b) => {
       const fa = a.closesAt > now ? a.closesAt : Infinity, fb = b.closesAt > now ? b.closesAt : Infinity;
       return fa - fb;

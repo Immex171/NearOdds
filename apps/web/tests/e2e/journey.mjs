@@ -303,7 +303,20 @@ async function desktop() {
   await page.locator("#amount").fill("5");
   check("no-offers state", await page.getByRole("button", { name: "No available offers" }).isDisabled());
   await page.goto(`${BASE}/markets/cpi-below-3`);
-  check("closed market state", await page.getByRole("button", { name: "Market closed" }).isDisabled());
+  await page.getByTestId("awaiting-panel").waitFor();
+  check("awaiting-resolution market: trade form replaced by the 'Trading has ended' panel", /Trading has ended/.test(await page.getByTestId("settlement-title").innerText()) && (await page.locator("#amount, #qty").count()) === 0);
+  check("awaiting panel lists what is still allowed (cancel, withdraw, merge)", /cancel your open offers/.test(await page.getByTestId("awaiting-panel").innerText()) && /combine equal YES \+ NO/.test(await page.getByTestId("awaiting-panel").innerText()));
+  await page.goto(`${BASE}/markets/world-cup-brazil`);
+  await page.getByTestId("resolved-panel").waitFor();
+  const resolvedText = await page.getByTestId("resolved-panel").innerText();
+  check("resolved market shows the result and the two-step redeem/withdraw explanation", /YES won/.test(resolvedText) && /Redeem/.test(resolvedText) && /Withdraw/.test(resolvedText));
+  const preview = page.getByRole("group", { name: "Redemption preview" }).or(page.locator("dl[aria-label='Redemption preview']"));
+  await preview.waitFor();
+  const pt = await preview.innerText();
+  check("redemption preview lists winning shares, payout and balance after", /Winning YES shares\s*25/.test(pt) && /Winning payout\s*25(\.00)? TEST/.test(pt) && /Available balance after/.test(pt), pt.replace(/\n/g, " | "));
+  await page.getByRole("button", { name: "Simulate redeem" }).click();
+  await page.getByText(/Demo redemption completed/).first().waitFor({ timeout: 5000 });
+  check("demo redeem credits the payout and leaves nothing more to redeem", /nothing to redeem/i.test(await page.getByTestId("resolved-panel").innerText()));
   check("no uncaught errors (desktop)", errors.length === 0, errors.slice(0, 2).join(" | "));
   await ctx.close();
 }

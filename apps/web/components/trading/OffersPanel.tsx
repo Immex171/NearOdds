@@ -74,7 +74,7 @@ export function OffersPanel({ book, market, account, loading, onPick, selectedId
           </div>
           <div className="my-1 flex items-center justify-between border-y border-line bg-elev/50 px-2 py-1.5 text-xs text-mute">
             <span>Spread <b className="text-fg">{spread == null ? "—" : `${priceStr(spread)} ${adapter.symbol}`}</b></span>
-            <span>Last YES trade <b className="text-fg">{priceStr(market.lastYes)} {adapter.symbol}</b></span>
+            <span>Last YES trade <b className="text-fg">{market.lastYes == null ? "unavailable" : `${priceStr(market.lastYes)} ${adapter.symbol}`}</b></span>
           </div>
           <div aria-label={`${outcome} buy offers (bids)`}>
             <p className="px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-yes">Bids · buy offers</p>

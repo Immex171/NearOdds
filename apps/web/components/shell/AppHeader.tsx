@@ -18,7 +18,7 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
 }
 
 export function AppHeader() {
-  const { adapter, setHelpOpen } = useApp();
+  const { adapter, setHelpOpen, deployment, liveConfigured, exitDemo } = useApp();
   const live = adapter.id === "near";
   const ref = useRef<HTMLElement>(null);
   // Publish the full header height (banner + both rows) so sticky content can sit below it.
@@ -34,9 +34,15 @@ export function AppHeader() {
   return (
     <>
       <header ref={ref} className="sticky top-0 z-40 border-b border-line bg-page">
-      <div className="border-b border-brand/30 bg-brand/10 text-center py-0.5 text-xs text-[#c5ccff]" role="status">
-        {live ? "Testnet, test funds only — live contract data" : "Demo mode — sample markets and balances"}
+      <div className={`border-b py-0.5 text-center text-xs ${live ? "border-yes/30 bg-yes/10 text-yes" : "border-[#e8913a]/40 bg-[#e8913a]/15 text-[#f3b36b]"}`} role="status" data-testid="mode-banner">
+        {live ? "NEAR testnet · test funds only, no monetary value · live contract data" : "DEMO MODE · simulated markets and balances, nothing touches a blockchain"}
+        {!live && liveConfigured && <> · <button type="button" onClick={exitDemo} className="font-semibold underline">Switch to live testnet</button></>}
       </div>
+      {live && deployment.state === "error" && (
+        <div role="alert" className="border-b border-no/40 bg-no-bg px-4 py-1 text-center text-xs text-no" data-testid="deployment-error">
+          Deployment check failed, so transactions are disabled: {deployment.problems.join(" ")}
+        </div>
+      )}
         <div className="mx-auto flex h-[60px] max-w-[1320px] items-center gap-3 px-4 md:h-[68px] md:gap-5 md:px-6">
           <Link href="/" className="flex shrink-0 items-center gap-2" aria-label="NearOdds home">
             <Logo />

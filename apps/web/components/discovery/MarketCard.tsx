@@ -31,7 +31,7 @@ export function MarketCard({ m }: { m: Market }) {
         )}
         <div className="mt-2.5 flex items-center justify-between text-xs text-mute">
           <span className="min-w-0 truncate">
-            {m.volume > 0n ? `${compact(m.volume)} ${adapter.symbol} vol` : "No volume"} · {timeUntil(m.closesAt, now)}
+            {m.volume == null ? "Volume unavailable" : m.volume > 0n ? `${compact(m.volume)} ${adapter.symbol} vol` : "No volume"} · {timeUntil(m.closesAt, now)}
           </span>
           <BookmarkButton id={m.id} className="relative z-10 -mb-1.5 -mr-2 h-8 w-8" />
         </div>

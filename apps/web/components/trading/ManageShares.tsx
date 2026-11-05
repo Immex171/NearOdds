@@ -25,7 +25,9 @@ export function ManageShares({ m, open, onClose }: { m: Market; open: boolean; o
   if (!parsed.ok) problem = amt ? parsed.error : "Enter an amount";
   else if (v === 0n) problem = "Enter an amount above zero";
   else if (v > maxV) problem = mode === "split" ? "Insufficient available collateral" : "Insufficient shares: you need equal YES and NO";
-  else if (mode === "split" && m.status !== "open") problem = "Creating shares is closed for this market";
+  else if (mode === "split" && !(m.flags?.splitOpen ?? m.status === "open")) problem = "Creating shares is closed: the market cutoff has passed";
+  else if (mode === "merge" && !(m.flags?.mergeOpen ?? m.status !== "resolved")) problem = "Combining shares is closed: this market is resolved. Redeem instead";
+  else if (adapter.id === "near" && account?.registered === false) problem = "Register with the market first (Funds page)";
   const ok = problem == null && !!account;
   const confirm = async () => {
     const done = await run((r) => (mode === "split" ? adapter.split(m.id, v, r) : adapter.merge(m.id, v, r)));

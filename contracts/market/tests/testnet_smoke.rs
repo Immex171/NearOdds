@@ -17,9 +17,15 @@
 //!   the account is created;
 //! * a non-secret journal (`deployments/runs/<kind>-<tag>.jsonl`) records account
 //!   IDs, transaction hashes and completed steps as they happen;
-//! * a transaction is submitted at most once. Its hash is journaled, and an
-//!   uncertain outcome is resolved by polling THAT hash, never by resubmitting.
-//!   If a submit itself fails (outcome unknown) the run stops and says so.
+//! * a transaction is signed and submitted exactly once. Its hash, signer and
+//!   operation are journaled. If its status cannot be read (pending, timeout, RPC
+//!   error) the outcome is UNCERTAIN: the run stops and journals `step_uncertain`.
+//!   Nothing is ever re-signed because of a timeout; the uncertain hash is
+//!   resolved later by polling THAT hash (`resolve_uncertain_on_testnet`).
+//! * account deletion and absence are only reported when the evidence is explicit
+//!   (`UNKNOWN_ACCOUNT`); transport errors and rate limits stay "uncertain".
+//! * run ids are collision-resistant and key files are created exclusively,
+//!   never overwritten.
 //!
 //! Both deploy the production `market.wasm` (never the failure-injection build)
 //! and the `test_collateral.wasm` fixture. See docs/testnet.md.
@@ -27,6 +33,7 @@
 mod common;
 use common::*;
 
+use near_workspaces::network::NetworkInfo;
 use near_workspaces::operations::TransactionStatus;
 use near_workspaces::result::ExecutionFinalResult;
 use near_workspaces::types::{Gas, KeyType, NearToken, SecretKey};
@@ -64,21 +71,42 @@ const FEE_MARGIN_MILLI: u128 = 1000;
 /// always be cleaned up and its NEAR recovered; runs are also journaled.
 static PERSIST_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Non-secret, append-only run journal (account ids, tx hashes, steps).
+/// `~/.near-credentials/testnet` (mode 700).
+fn default_creds_dir() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME");
+    PathBuf::from(home).join(".near-credentials/testnet")
+}
+
+/// Non-secret, append-only run journal (account ids, tx hashes, steps). It also
+/// carries the credentials directory used for the run's keys (`None` on Sandbox,
+/// where nothing is persisted).
 #[derive(Clone)]
 struct Journal {
     path: Option<PathBuf>,
+    creds_dir: Option<PathBuf>,
 }
 
 impl Journal {
     fn open(kind: &str, tag: &str) -> Journal {
         if !PERSIST_KEYS.load(std::sync::atomic::Ordering::SeqCst) {
-            return Journal { path: None }; // Sandbox runs are not journaled
+            return Journal {
+                path: None,
+                creds_dir: None,
+            }; // Sandbox runs are not journaled
         }
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deployments/runs");
         std::fs::create_dir_all(&dir).unwrap();
         Journal {
             path: Some(dir.join(format!("{kind}-{tag}.jsonl"))),
+            creds_dir: Some(default_creds_dir()),
+        }
+    }
+
+    /// Explicit journal file and credentials directory (used by the tests).
+    fn at(path: PathBuf, creds_dir: Option<PathBuf>) -> Journal {
+        Journal {
+            path: Some(path),
+            creds_dir,
         }
     }
 
@@ -98,12 +126,56 @@ impl Journal {
             writeln!(f, "{v}").unwrap();
         }
     }
+
+    /// Every event recorded so far (empty when not journaling).
+    fn events(&self) -> Vec<Value> {
+        self.path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| {
+                t.lines()
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// A transaction that was signed and submitted once but whose final outcome
+/// could not be read. It may have succeeded, failed or still be in flight.
+#[derive(Debug, Clone)]
+struct Uncertain {
+    step: String,
+    tx_hash: String,
+    signer: String,
+    reason: String,
+}
+
+/// Signer of a submitted transaction. `TransactionStatus` does not expose it, but
+/// its `Debug` output does (`sender_id`); `signer_parsing_matches_debug_format`
+/// pins that format so a library upgrade fails loudly rather than silently.
+fn signer_of(status: &TransactionStatus) -> String {
+    parse_signer(&format!("{status:?}"))
+}
+
+fn parse_signer(debug: &str) -> String {
+    debug
+        .split("sender_id:")
+        .nth(1)
+        .and_then(|rest| rest.split('"').nth(1))
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 struct Recorder {
     steps: Vec<Value>,
     journal: Journal,
     last_hash: String,
+    /// How long to read a transaction's status before declaring it uncertain.
+    patience: std::time::Duration,
+    /// Failure injection (tests only): every status read fails as if the RPC
+    /// were unavailable, while the transaction itself still executes.
+    inject_status_unavailable: bool,
 }
 
 impl Recorder {
@@ -111,10 +183,16 @@ impl Recorder {
         let journal = Journal::open(kind, tag);
         journal.event(json!({ "event": "run_start", "kind": kind, "tag": tag,
             "parent": parent.id(), "git_commit": git(&["rev-parse", "HEAD"]) }));
+        Recorder::with_journal(journal)
+    }
+
+    fn with_journal(journal: Journal) -> Recorder {
         Recorder {
             steps: vec![],
             journal,
             last_hash: String::new(),
+            patience: std::time::Duration::from_secs(60),
+            inject_status_unavailable: false,
         }
     }
 
@@ -129,41 +207,75 @@ impl Recorder {
         );
     }
 
-    /// Polls the RECORDED hash. Returns the result once the transaction has
-    /// finished, or `None` if the node never observed it within ~90 s (it was
-    /// dropped, e.g. by a lagging RPC node). It never resubmits by itself.
+    /// The transaction WAS submitted (hash known) but its outcome is unknown.
+    fn stop_uncertain(&self, u: &Uncertain) -> ! {
+        panic!(
+            "UNCERTAIN: '{}' (tx {} signed by {}) was submitted but its outcome could not be \
+             read ({}). It may have succeeded. NOT resubmitting. Resolve it with \
+             resolve_uncertain_on_testnet (see docs/testnet.md) before running anything again.",
+            u.step, u.tx_hash, u.signer, u.reason
+        );
+    }
+
+    /// Polls the RECORDED hash. `Ok` once the transaction has finished.
+    /// `Err(Uncertain)` if its status could not be read within `patience`
+    /// (pending, timeout or RPC error). That does NOT mean the transaction was
+    /// dropped or failed, so nothing is ever re-signed because of it.
     async fn finish(
         &mut self,
         step: &str,
         status: TransactionStatus,
-    ) -> Option<ExecutionFinalResult> {
+    ) -> Result<ExecutionFinalResult, Uncertain> {
         let hash = status.hash().to_string();
+        let signer = signer_of(&status);
         self.journal
-            .event(json!({ "event": "step_submitted", "step": step, "tx_hash": hash }));
-        // Wall-clock patience (each RPC call is also bounded): a healthy testnet
-        // transaction finishes within seconds, so 60 s without the node ever
-        // reporting it means it was dropped.
+            .event(json!({ "event": "step_submitted", "step": step,
+            "tx_hash": hash, "signer": signer, "operation": step }));
         let start = std::time::Instant::now();
         let mut polls = 0;
-        while start.elapsed() < std::time::Duration::from_secs(60) {
+        let mut last = String::from("transaction still pending");
+        while start.elapsed() < self.patience {
             polls += 1;
-            match tokio::time::timeout(std::time::Duration::from_secs(15), status.status()).await {
-                Ok(Ok(Poll::Ready(r))) => {
-                    self.last_hash = hash;
-                    return Some(r);
-                }
-                Ok(Ok(Poll::Pending)) | Err(_) => {}
-                Ok(Err(e)) => {
-                    if polls % 8 == 1 {
-                        eprintln!("  ... polling '{step}' ({hash}): {e}");
+            if self.inject_status_unavailable {
+                last = "injected: RPC unavailable".to_string();
+            } else {
+                match tokio::time::timeout(std::time::Duration::from_secs(15), status.status())
+                    .await
+                {
+                    Ok(Ok(Poll::Ready(r))) => {
+                        self.last_hash = hash;
+                        return Ok(r);
+                    }
+                    Ok(Ok(Poll::Pending)) => last = "transaction still pending".to_string(),
+                    Err(_) => last = "status request timed out".to_string(),
+                    Ok(Err(e)) => {
+                        last = e.to_string();
+                        if polls % 8 == 1 {
+                            eprintln!("  ... polling '{step}' ({hash}): {e}");
+                        }
                     }
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(
+                if self.inject_status_unavailable {
+                    50
+                } else {
+                    2000
+                },
+            ))
+            .await;
         }
+        let u = Uncertain {
+            step: step.to_string(),
+            tx_hash: hash,
+            signer,
+            reason: last,
+        };
         self.journal
-            .event(json!({ "event": "step_never_observed", "step": step, "tx_hash": hash }));
-        None
+            .event(json!({ "event": "step_uncertain", "step": u.step,
+            "tx_hash": u.tx_hash, "signer": u.signer, "operation": u.step,
+            "reason": u.reason }));
+        Err(u)
     }
 
     fn push(&mut self, step: &str, ok: bool, expected_failure: bool) {
@@ -200,32 +312,20 @@ impl Recorder {
     }
 }
 
-/// Submit, then poll the recorded hash. If (and only if) the node never
-/// observed that hash within the patience window, the step is submitted again
-/// (journaled, at most 3 attempts). A transaction whose submit call errored with
-/// an unknown outcome is never resubmitted. Evaluates to the final result.
+/// Sign and submit ONCE, then poll the recorded hash. If the status cannot be
+/// read within the patience window the outcome is UNCERTAIN and the run stops:
+/// a timeout is not proof the transaction failed, so it is never re-signed.
+/// A submit call that errored (outcome unknown) also stops the run.
+/// Evaluates to the final result.
 macro_rules! tx {
     ($rec:expr, $name:expr, $txn:expr) => {{
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            $rec.journal.event(json!({ "event": "step_submitting", "step": $name, "attempt": attempt }));
-            match $txn.transact_async().await {
-                Ok(s) => match $rec.finish($name, s).await {
-                    Some(r) => break r,
-                    None => {
-                        assert!(
-                            attempt < 3,
-                            "'{}' was never observed on chain after {} submissions; see the journal",
-                            $name,
-                            attempt
-                        );
-                        $rec.journal.event(json!({ "event": "step_resubmitting", "step": $name,
-                            "reason": "previous hash never observed on chain (dropped by the node)" }));
-                    }
-                },
-                Err(e) => $rec.uncertain($name, e.to_string()),
-            }
+        $rec.journal.event(json!({ "event": "step_submitting", "step": $name }));
+        match $txn.transact_async().await {
+            Ok(s) => match $rec.finish($name, s).await {
+                Ok(r) => r,
+                Err(u) => $rec.stop_uncertain(&u),
+            },
+            Err(e) => $rec.uncertain($name, e.to_string()),
         }
     }};
 }
@@ -270,27 +370,165 @@ async fn check_funding<T: Network + 'static>(
     );
 }
 
-fn save_key(account_id: &str, sk: &SecretKey) {
-    let home = std::env::var("HOME").expect("HOME");
-    let dir = format!("{home}/.near-credentials/testnet");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = format!("{dir}/{account_id}.json");
+#[derive(Debug)]
+enum KeyError {
+    /// A credentials file for this account already exists; it is never overwritten.
+    AlreadyExists(PathBuf),
+    Io(String),
+}
+
+fn key_path(dir: &std::path::Path, account_id: &str) -> PathBuf {
+    dir.join(format!("{account_id}.json"))
+}
+
+/// Writes `<dir>/<account>.json` EXCLUSIVELY (`create_new`): if the file exists
+/// it is left untouched and `AlreadyExists` is returned. Created with mode 600
+/// from the start (no window where it is world-readable); `dir` is mode 700.
+fn save_key_in(dir: &std::path::Path, account_id: &str, sk: &SecretKey) -> Result<(), KeyError> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir).map_err(|e| KeyError::Io(e.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| KeyError::Io(e.to_string()))?;
+    }
+    let path = key_path(dir, account_id);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            KeyError::AlreadyExists(path.clone())
+        } else {
+            KeyError::Io(e.to_string())
+        }
+    })?;
     let body = json!({
         "account_id": account_id,
         "public_key": sk.public_key().to_string(),
         "private_key": sk.to_string(),
     });
-    std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap()).unwrap();
-    #[cfg(unix)]
+    f.write_all(serde_json::to_string_pretty(&body).unwrap().as_bytes())
+        .and_then(|_| f.sync_all())
+        .map_err(|e| KeyError::Io(e.to_string()))
+}
+
+/// The stored key for `account_id`, if the file exists AND is self-consistent
+/// (account id matches; the public key matches the private key). Never printed.
+fn load_verified_key(dir: &std::path::Path, account_id: &str) -> Option<SecretKey> {
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(key_path(dir, account_id)).ok()?).ok()?;
+    let sk: SecretKey = v["private_key"].as_str()?.parse().ok()?;
+    let consistent = v["account_id"].as_str().is_none_or(|a| a == account_id)
+        && v["public_key"]
+            .as_str()
+            .is_none_or(|pk| pk == sk.public_key().to_string());
+    consistent.then_some(sk)
+}
+
+/// What the chain says about an account. Only `Absent` is evidence that it does
+/// not exist: it requires an explicit `UNKNOWN_ACCOUNT` response.
+#[derive(Debug, Clone, PartialEq)]
+enum AccountState {
+    Present(u128),
+    Absent,
+    Unknown(String),
+}
+
+/// Interprets a raw JSON-RPC `query/view_account` response body. near-workspaces
+/// flattens every failure into "unable to fulfill the query request", which cannot
+/// tell a missing account from a rate limit, so the harness reads the RPC itself:
+/// only `error.cause.name == "UNKNOWN_ACCOUNT"` is absence; everything else
+/// that is not a clear success (HTTP errors, rate limits, INTERNAL_ERROR,
+/// timeouts, unparseable bodies) is `Unknown`.
+fn classify_account_response(body: &Value) -> AccountState {
+    if let Some(err) = body.get("error") {
+        return if err["cause"]["name"].as_str() == Some("UNKNOWN_ACCOUNT") {
+            AccountState::Absent
+        } else {
+            AccountState::Unknown(err.to_string())
+        };
+    }
+    match body["result"]["amount"]
+        .as_str()
+        .and_then(|a| a.parse::<u128>().ok())
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        Some(b) => AccountState::Present(b),
+        None => AccountState::Unknown(format!("unexpected response: {body}")),
     }
 }
 
-/// Creates a funded sub-account. The key is saved first; the id is journaled
-/// before the call. If the call errors we check whether the account exists with
-/// OUR key before ever creating it again.
+/// One bounded raw `view_account` query against `rpc_url`.
+fn raw_view_account(rpc_url: &str, id: &str) -> AccountState {
+    let req = json!({ "jsonrpc": "2.0", "id": "nearodds", "method": "query",
+        "params": { "request_type": "view_account", "finality": "optimistic", "account_id": id } });
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "--max-time",
+            "20",
+            "-H",
+            "content-type: application/json",
+            "-d",
+        ])
+        .arg(req.to_string())
+        .arg(rpc_url)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
+            Ok(v) => classify_account_response(&v),
+            Err(e) => AccountState::Unknown(format!("unparseable response: {e}")),
+        },
+        Ok(o) => AccountState::Unknown(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(e) => AccountState::Unknown(e.to_string()),
+    }
+}
+
+/// Reads an account with bounded time. `rpc_down` injects "RPC unavailable".
+async fn account_state<T: Network + 'static>(
+    worker: &Worker<T>,
+    id: &near_workspaces::AccountId,
+    rpc_down: bool,
+) -> AccountState {
+    if rpc_down {
+        return AccountState::Unknown("injected: RPC unavailable".into());
+    }
+    let (url, id) = (worker.info().rpc_url.to_string(), id.to_string());
+    tokio::task::spawn_blocking(move || raw_view_account(&url, &id))
+        .await
+        .unwrap_or_else(|e| AccountState::Unknown(e.to_string()))
+}
+
+/// Polls until the account state is conclusive (`Present` or `Absent`) or the
+/// window ends; the last (possibly `Unknown`) state is returned.
+async fn settle_account_state<T: Network + 'static>(
+    worker: &Worker<T>,
+    id: &near_workspaces::AccountId,
+    rpc_down: bool,
+    window: std::time::Duration,
+) -> AccountState {
+    let start = std::time::Instant::now();
+    loop {
+        let st = account_state(worker, id, rpc_down).await;
+        if !matches!(st, AccountState::Unknown(_)) || start.elapsed() >= window {
+            return st;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+/// Creates a funded sub-account.
+/// * The key is saved EXCLUSIVELY before the call; an existing key file is never
+///   overwritten. If one exists (an interrupted earlier attempt) it is reused
+///   only when it is self-consistent and the chain agrees: the account does not
+///   exist yet, or it exists with that very key. Any other combination refuses.
+/// * The id is journaled before the call. If the call errors we check whether
+///   the account exists with OUR key before ever creating it again.
 async fn user<T: Network + 'static>(
     worker: &Worker<T>,
     parent: &Account,
@@ -298,11 +536,46 @@ async fn user<T: Network + 'static>(
     milli: u128,
     journal: &Journal,
 ) -> Account {
-    let sk = SecretKey::from_random(KeyType::ED25519);
     let id = format!("{name}.{}", parent.id());
-    if PERSIST_KEYS.load(std::sync::atomic::Ordering::SeqCst) {
-        save_key(&id, &sk);
-    }
+    let account_id: near_workspaces::AccountId = id.parse().unwrap();
+    let sk = match &journal.creds_dir {
+        None => SecretKey::from_random(KeyType::ED25519),
+        Some(dir) => {
+            let fresh = SecretKey::from_random(KeyType::ED25519);
+            match save_key_in(dir, &id, &fresh) {
+                Ok(()) => fresh,
+                Err(KeyError::AlreadyExists(path)) => {
+                    let existing = load_verified_key(dir, &id).unwrap_or_else(|| {
+                        panic!("a key file for {id} exists at {path:?} but is unreadable or inconsistent. \
+                                Refusing to overwrite it; move it aside yourself if you are sure.")
+                    });
+                    let probe =
+                        Account::from_secret_key(account_id.clone(), existing.clone(), worker);
+                    match account_state(worker, &account_id, false).await {
+                        AccountState::Absent => {}
+                        AccountState::Present(_) => {
+                            let ours = probe.view_access_key(&existing.public_key()).await.is_ok();
+                            assert!(
+                                ours,
+                                "COLLISION: {id} exists on chain but not with the key stored at {path:?}. \
+                                 Refusing to continue; the stored key was left untouched."
+                            );
+                            journal.event(json!({ "event": "account_reused", "account": id,
+                                "public_key": existing.public_key().to_string() }));
+                            println!("  reusing existing {id} (stored key verified on chain)");
+                            return probe;
+                        }
+                        AccountState::Unknown(e) => panic!(
+                            "UNCERTAIN: cannot tell whether {id} exists ({e}); keeping the stored key and stopping."
+                        ),
+                    }
+                    journal.event(json!({ "event": "key_reused", "account": id }));
+                    existing
+                }
+                Err(KeyError::Io(e)) => panic!("could not save the key for {id}: {e}"),
+            }
+        }
+    };
     journal.event(json!({ "event": "account_creating", "account": id,
         "funding_milli": milli, "public_key": sk.public_key().to_string() }));
     match parent
@@ -319,7 +592,7 @@ async fn user<T: Network + 'static>(
             acct
         }
         Err(e) => {
-            let probe = Account::from_secret_key(id.parse().unwrap(), sk.clone(), worker);
+            let probe = Account::from_secret_key(account_id, sk.clone(), worker);
             let exists_with_our_key = probe.view_account().await.is_ok()
                 && probe.view_access_key(&sk.public_key()).await.is_ok();
             journal.event(json!({ "event": "account_create_uncertain", "account": id,
@@ -327,7 +600,7 @@ async fn user<T: Network + 'static>(
             assert!(
                 exists_with_our_key,
                 "UNCERTAIN: creating {id} failed ({e}) and it is not visible with our key. \
-                 Not retrying; check the journal."
+                 Not retrying; the key stays in the credentials directory. Check the journal."
             );
             journal.event(json!({ "event": "account_created", "account": id, "recovered": true }));
             probe
@@ -1007,77 +1280,172 @@ async fn run_smoke<T: Network + 'static>(
     }
 }
 
+/// Refuses anything that must never be deleted by this tooling: the parent,
+/// persistent `-demo-` accounts, and anything that is not a sub-account of the parent.
+fn assert_deletable(id: &str, parent: &near_workspaces::AccountId) {
+    assert_ne!(id, parent.as_str(), "refusing to delete the parent");
+    assert!(
+        !id.contains("-demo-"),
+        "refusing to delete a demo account: {id}"
+    );
+    assert!(
+        id.ends_with(&format!(".{parent}")),
+        "{id} is not a sub-account of the parent"
+    );
+}
+
+/// Deletes `accounts` into `parent` and reports, SEPARATELY:
+/// * per account: `deleted` (the delete transaction was observed to succeed, or
+///   the account is explicitly `UNKNOWN_ACCOUNT`), `still_present`, or
+///   `uncertain` (transport errors, rate limits, timeouts);
+/// * the refund: `confirmed`, `shortfall` or `unknown` from the parent's balance.
+///
+/// A failed query is never read as "the account is gone".
+///
+/// `inject_rpc_down` (tests): the delete executes for real, but its result is
+/// discarded and every later query fails, as if the RPC had gone away.
+async fn delete_accounts<T: Network + 'static>(
+    worker: &Worker<T>,
+    parent: &near_workspaces::AccountId,
+    accounts: Vec<Account>,
+    journal: &Journal,
+    inject_rpc_down: bool,
+) -> Value {
+    for a in &accounts {
+        assert_deletable(a.id().as_str(), parent);
+    }
+    let ids: Vec<String> = accounts.iter().map(|a| a.id().to_string()).collect();
+    journal.event(json!({ "event": "cleanup_start", "accounts": ids }));
+    let window = std::time::Duration::from_secs(if inject_rpc_down { 1 } else { 30 });
+    let parent_before = settle_account_state(worker, parent, inject_rpc_down, window).await;
+    let mut per_account = vec![];
+    let mut expected_refund = 0u128;
+    let mut refund_known = matches!(parent_before, AccountState::Present(_));
+    for a in accounts {
+        let id = a.id().clone();
+        let before = settle_account_state(worker, &id, false, window).await;
+        let held = match &before {
+            AccountState::Present(b) => Some(*b),
+            _ => None,
+        };
+        journal.event(json!({ "event": "account_deleting", "account": id,
+            "balance_before_delete": held.map(|b| NearToken::from_yoctonear(b).to_string()),
+            "state_before": format!("{before:?}") }));
+        // Delete transaction: Some(Ok(hash)) succeeded, Some(Err(msg)) executed
+        // but failed, None = outcome unknown (error, or injected).
+        let mut tx_hash = None;
+        let mut tx_succeeded = None;
+        let mut tx_error = None;
+        if before != AccountState::Absent {
+            match a.delete_account(parent).await {
+                Ok(r) if !inject_rpc_down => {
+                    tx_hash = Some(r.outcome().transaction_hash.to_string());
+                    tx_succeeded = Some(r.is_success());
+                }
+                Ok(r) => {
+                    tx_hash = Some(r.outcome().transaction_hash.to_string());
+                    tx_error = Some("injected: delete status unavailable".to_string());
+                }
+                Err(e) => tx_error = Some(e.to_string()),
+            }
+        }
+        let after = settle_account_state(worker, &id, inject_rpc_down, window).await;
+        let (status, evidence) = match (tx_succeeded, &after) {
+            (Some(true), _) => ("deleted", "delete transaction observed to succeed"),
+            (_, AccountState::Absent) if before == AccountState::Absent => {
+                ("deleted", "explicit UNKNOWN_ACCOUNT before any delete (already absent)")
+            }
+            (_, AccountState::Absent) => ("deleted", "explicit UNKNOWN_ACCOUNT after the delete"),
+            (Some(false), AccountState::Present(_)) => {
+                ("still_present", "delete transaction failed and the account is present")
+            }
+            (_, AccountState::Present(_)) => (
+                "uncertain",
+                "account still present but the delete transaction's outcome is unknown (it may still land)",
+            ),
+            (_, AccountState::Unknown(_)) => (
+                "uncertain",
+                "delete outcome and account state could not be read (transport error, rate limit or timeout)",
+            ),
+        };
+        if status == "deleted" {
+            match held {
+                Some(b) => expected_refund += b,
+                None => refund_known = false,
+            }
+        } else {
+            refund_known = false;
+        }
+        journal.event(
+            json!({ "event": format!("account_delete_{status}"), "account": id,
+            "evidence": evidence, "tx_hash": tx_hash, "tx_error": tx_error,
+            "state_after": format!("{after:?}") }),
+        );
+        println!("  {id}: {status} ({evidence})");
+        per_account.push(json!({
+            "account": id,
+            "status": status,
+            "evidence": evidence,
+            "delete_tx_hash": tx_hash,
+            "delete_tx_error": tx_error,
+            "state_after": format!("{after:?}"),
+            "balance_before_delete": held.map(|b| NearToken::from_yoctonear(b).to_string()),
+        }));
+    }
+    // Refund confirmation is recorded separately from deletion.
+    let parent_after = settle_account_state(worker, parent, inject_rpc_down, window).await;
+    let slack = NearToken::from_millinear(100).as_yoctonear();
+    let (refund_status, returned) = match (&parent_before, &parent_after) {
+        (AccountState::Present(b), AccountState::Present(a)) if refund_known => {
+            let returned = a.saturating_sub(*b);
+            if returned + slack >= expected_refund {
+                ("confirmed", Some(returned))
+            } else {
+                ("shortfall", Some(returned))
+            }
+        }
+        _ => ("unknown", None),
+    };
+    let all_deleted = per_account.iter().all(|p| p["status"] == "deleted");
+    let overall = if all_deleted && refund_status == "confirmed" {
+        "confirmed"
+    } else if per_account.iter().any(|p| p["status"] == "still_present") {
+        "failed"
+    } else {
+        "uncertain"
+    };
+    journal.event(json!({ "event": "cleanup_done", "overall": overall,
+        "refund": refund_status }));
+    let fmt = |s: &AccountState| match s {
+        AccountState::Present(b) => NearToken::from_yoctonear(*b).to_string(),
+        other => format!("{other:?}"),
+    };
+    json!({
+        "overall": overall,
+        "accounts": per_account,
+        "accounts_deleted": per_account.iter().filter(|p| p["status"] == "deleted")
+            .map(|p| p["account"].clone()).collect::<Vec<_>>(),
+        "refund": {
+            "status": refund_status,
+            "expected_from_confirmed_deletions": NearToken::from_yoctonear(expected_refund).to_string(),
+            "returned_to_beneficiary": returned.map(|r| NearToken::from_yoctonear(r).to_string()),
+            "slack_allowed": NearToken::from_yoctonear(slack).to_string(),
+        },
+        "beneficiary": parent,
+        "parent_balance_before_cleanup": fmt(&parent_before),
+        "parent_balance_after_cleanup": fmt(&parent_after),
+    })
+}
+
 /// Deletes exactly the accounts created by this smoke run and returns their
-/// NEAR to the parent. Refuses the parent and any demo account.
+/// NEAR to the parent. Never panics on uncertainty: the returned value says
+/// `overall: confirmed | uncertain | failed` so the caller can record it.
 async fn cleanup_smoke<T: Network + 'static>(
     worker: &Worker<T>,
     parent: &Account,
     run: SmokeRun,
 ) -> Value {
-    let ids: Vec<String> = run.disposable.iter().map(|a| a.id().to_string()).collect();
-    for id in &ids {
-        assert_ne!(id, parent.id().as_str(), "refusing to delete the parent");
-        assert!(
-            !id.contains("-demo-"),
-            "refusing to delete a demo account: {id}"
-        );
-        assert!(
-            id.ends_with(&format!(".{}", parent.id())),
-            "{id} is not a sub-account of the parent"
-        );
-    }
-    run.journal
-        .event(json!({ "event": "cleanup_start", "accounts": ids }));
-    let before = worker.view_account(parent.id()).await.unwrap().balance;
-    let mut per_account = vec![];
-    let mut sum = 0u128;
-    for a in &run.disposable {
-        let b = worker.view_account(a.id()).await.unwrap().balance;
-        sum += b.as_yoctonear();
-        per_account.push(json!({ "account": a.id(), "balance_before_delete": b.to_string() }));
-    }
-    for a in run.disposable {
-        let id = a.id().clone();
-        match a.delete_account(parent.id()).await {
-            Ok(r) => {
-                assert!(r.is_success(), "deleting {id} failed: {:#?}", r.failures());
-                run.journal
-                    .event(json!({ "event": "account_deleted", "account": id,
-                    "tx_hash": r.outcome().transaction_hash.to_string() }));
-                println!("  deleted {id} (tx {})", r.outcome().transaction_hash);
-            }
-            Err(e) => {
-                let still_exists = worker.view_account(&id).await.is_ok();
-                run.journal
-                    .event(json!({ "event": "account_delete_uncertain", "account": id,
-                    "error": e.to_string(), "still_exists": still_exists }));
-                assert!(
-                    !still_exists,
-                    "UNCERTAIN: deleting {id} failed ({e}) and it still exists. Not retrying; check the journal."
-                );
-            }
-        }
-    }
-    let after = worker.view_account(parent.id()).await.unwrap().balance;
-    let returned = after.as_yoctonear().saturating_sub(before.as_yoctonear());
-    let slack = NearToken::from_millinear(100).as_yoctonear();
-    assert!(
-        returned + slack >= sum,
-        "only {} came back of {} held by the deleted accounts",
-        NearToken::from_yoctonear(returned),
-        NearToken::from_yoctonear(sum)
-    );
-    run.journal.event(json!({ "event": "cleanup_done", "returned": NearToken::from_yoctonear(returned).to_string() }));
-    json!({
-        "status": "deleted after verification; kept only as historical test evidence (explorer history remains)",
-        "accounts_deleted": ids,
-        "per_account": per_account,
-        "beneficiary": parent.id(),
-        "held_by_deleted_accounts": NearToken::from_yoctonear(sum).to_string(),
-        "returned_to_beneficiary": NearToken::from_yoctonear(returned).to_string(),
-        "parent_balance_before_cleanup": before.to_string(),
-        "parent_balance_after_cleanup": after.to_string(),
-    })
+    delete_accounts(worker, parent.id(), run.disposable, &run.journal, false).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1292,10 +1660,7 @@ async fn run_demo<T: Network + 'static>(
 /// Full-access key for a testnet account from the standard credentials
 /// directory (`~/.near-credentials/testnet/<id>.json`, mode 600). Never printed.
 fn stored_key(account_id: &str) -> Option<SecretKey> {
-    let home = std::env::var("HOME").ok()?;
-    let path = format!("{home}/.near-credentials/testnet/{account_id}.json");
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    v["private_key"].as_str()?.parse().ok()
+    load_verified_key(&default_creds_dir(), account_id)
 }
 
 /// The funded parent. Key: `NEARODDS_TESTNET_PARENT_KEY`, else the stored
@@ -1321,12 +1686,133 @@ fn testnet_parent(worker: &Worker<near_workspaces::network::Testnet>) -> Account
     Account::from_secret_key(parent_id.parse().unwrap(), key, worker)
 }
 
+/// Collision-resistant run id: 6 base-36 chars of the unix time in seconds plus
+/// 8 random hex chars (32 bits, from the OS-seeded hasher and the nanoseconds).
+/// 14 chars total, so the longest id (`probe-demo-<tag>.<parent>`) stays under
+/// NEAR's 64-character limit for any parent up to 38 characters.
 fn unique_tag() -> String {
-    let s = std::time::SystemTime::now()
+    use std::hash::{BuildHasher, Hasher};
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    format!("{}", s % 10_000_000)
+        .unwrap();
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(now.as_nanos());
+    h.write_u32(std::process::id());
+    let rand = (h.finish() & 0xFFFF_FFFF) as u32;
+    let mut secs = now.as_secs();
+    let mut b36 = String::new();
+    for _ in 0..6 {
+        let d = (secs % 36) as u8;
+        b36.insert(
+            0,
+            if d < 10 {
+                (b'0' + d) as char
+            } else {
+                (b'a' + d - 10) as char
+            },
+        );
+        secs /= 36;
+    }
+    format!("{b36}{rand:08x}")
+}
+
+/// Steps in a journal that were submitted but have no recorded final result:
+/// the transactions a human must resolve before anything else is run.
+fn unresolved_steps(events: &[Value]) -> Vec<Uncertain> {
+    let finished: std::collections::HashSet<String> = events
+        .iter()
+        .filter(|e| e["event"] == "step_done" || e["event"] == "step_resolved")
+        .filter_map(|e| e["tx_hash"].as_str().map(String::from))
+        .collect();
+    let mut out: Vec<Uncertain> = vec![];
+    for e in events
+        .iter()
+        .filter(|e| e["event"] == "step_submitted" || e["event"] == "step_uncertain")
+    {
+        let Some(hash) = e["tx_hash"].as_str() else {
+            continue;
+        };
+        if finished.contains(hash) || out.iter().any(|u| u.tx_hash == hash) {
+            continue;
+        }
+        out.push(Uncertain {
+            step: e["step"].as_str().unwrap_or("?").to_string(),
+            tx_hash: hash.to_string(),
+            signer: e["signer"].as_str().unwrap_or("unknown").to_string(),
+            reason: e["reason"]
+                .as_str()
+                .unwrap_or("no result recorded")
+                .to_string(),
+        });
+    }
+    out
+}
+
+/// What a node says about one transaction hash.
+#[derive(Debug, PartialEq)]
+enum TxLookup {
+    Succeeded,
+    Failed(String),
+    /// This node has no record of it. NOT proof that it never executed.
+    NotFound,
+    Unknown(String),
+}
+
+/// Interprets a JSON-RPC `tx` response body.
+fn classify_tx_response(body: &Value) -> TxLookup {
+    if let Some(err) = body.get("error") {
+        let name = err["cause"]["name"].as_str().unwrap_or("");
+        return if name == "UNKNOWN_TRANSACTION" {
+            TxLookup::NotFound
+        } else {
+            TxLookup::Unknown(err.to_string())
+        };
+    }
+    let Some(result) = body.get("result") else {
+        return TxLookup::Unknown(format!("unexpected response: {body}"));
+    };
+    if result["final_execution_status"].as_str() != Some("FINAL") {
+        return TxLookup::Unknown(format!(
+            "not final yet ({})",
+            result["final_execution_status"]
+        ));
+    }
+    let failed = |v: &Value| v.get("Failure").is_some();
+    let receipts_failed = result["receipts_outcome"]
+        .as_array()
+        .map(|rs| rs.iter().any(|r| failed(&r["outcome"]["status"])))
+        .unwrap_or(false);
+    if failed(&result["status"]) || receipts_failed {
+        TxLookup::Failed(result["status"].to_string())
+    } else {
+        TxLookup::Succeeded
+    }
+}
+
+/// JSON-RPC `tx` for one hash (via curl, bounded to 20 s).
+fn lookup_tx(rpc_url: &str, tx_hash: &str, signer: &str) -> TxLookup {
+    let req = json!({ "jsonrpc": "2.0", "id": "nearodds", "method": "tx",
+        "params": { "tx_hash": tx_hash, "sender_account_id": signer, "wait_until": "NONE" } });
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "--max-time",
+            "20",
+            "-H",
+            "content-type: application/json",
+            "-d",
+        ])
+        .arg(req.to_string())
+        .arg(rpc_url)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
+            Ok(v) => classify_tx_response(&v),
+            Err(e) => TxLookup::Unknown(format!("unparseable response: {e}")),
+        },
+        Ok(o) => TxLookup::Unknown(String::from_utf8_lossy(&o.stderr).into_owned()),
+        Err(e) => TxLookup::Unknown(e.to_string()),
+    }
 }
 
 fn write_facts(default_name: &str, env_var: &str, facts: &Value) {
@@ -1364,6 +1850,8 @@ async fn smoke_on_sandbox() {
     // Cleanup only deletes this run's accounts and returns their NEAR.
     let cleanup = cleanup_smoke(&worker, &root, run).await;
     assert_eq!(cleanup["accounts_deleted"].as_array().unwrap().len(), 5);
+    assert_eq!(cleanup["overall"], "confirmed", "{cleanup:#}");
+    assert_eq!(cleanup["refund"]["status"], "confirmed", "{cleanup:#}");
 }
 
 #[tokio::test]
@@ -1409,6 +1897,11 @@ async fn smoke_on_testnet() {
     if cleanup {
         facts["cleanup"] = cleanup_smoke(&worker, &parent, run).await;
         write_facts("testnet.json", "NEARODDS_DEPLOYMENT_OUT", &facts);
+        assert_eq!(
+            facts["cleanup"]["overall"], "confirmed",
+            "cleanup is not confirmed; see the record and the journal: {:#}",
+            facts["cleanup"]
+        );
     }
 }
 
@@ -1467,61 +1960,72 @@ async fn delete_testnet_accounts() {
     let worker = testnet_worker().await;
     let parent = testnet_parent(&worker);
     let journal = Journal::open("recovery", &unique_tag());
-    let before = worker.view_account(parent.id()).await.unwrap().balance;
-    let mut deleted = 0;
+    let mut accounts = vec![];
     for id in std::env::var("NEARODDS_DELETE_ACCOUNTS")
         .unwrap_or_default()
         .split(',')
         .filter(|s| !s.trim().is_empty())
     {
         let id = id.trim();
-        assert_ne!(id, parent.id().as_str(), "refusing to delete the parent");
-        assert!(
-            id.ends_with(&format!(".{}", parent.id())),
-            "{id} is not a sub-account of the parent"
-        );
-        assert!(
-            !id.contains("-demo-"),
-            "refusing to delete persistent demo account {id}"
-        );
-        let sk = stored_key(id).unwrap_or_else(|| panic!("no stored key for {id}"));
+        assert_deletable(id, parent.id());
+        let sk = stored_key(id).unwrap_or_else(|| panic!("no verified stored key for {id}"));
         let acct = Account::from_secret_key(id.parse().unwrap(), sk.clone(), &worker);
-        let matches = acct.view_access_key(&sk.public_key()).await.is_ok();
-        println!(
-            "{id}: saved public key {} matches an on-chain access key: {matches}",
-            sk.public_key()
-        );
-        assert!(matches, "saved key does not match {id}");
-        let bal = worker.view_account(acct.id()).await.unwrap().balance;
-        journal.event(
-            json!({ "event": "account_deleting", "account": id, "balance": bal.to_string() }),
-        );
-        match acct.delete_account(parent.id()).await {
-            Ok(r) => {
-                assert!(r.is_success(), "{:#?}", r.failures());
-                journal.event(json!({ "event": "account_deleted", "account": id,
-                    "tx_hash": r.outcome().transaction_hash.to_string() }));
-                println!(
-                    "deleted {id} (held {bal}), tx {}",
-                    r.outcome().transaction_hash
-                );
-                deleted += 1;
-            }
-            Err(e) => {
-                let still = worker.view_account(&id.parse().unwrap()).await.is_ok();
-                journal.event(json!({ "event": "account_delete_uncertain", "account": id,
-                    "error": e.to_string(), "still_exists": still }));
-                assert!(
-                    !still,
-                    "UNCERTAIN: deleting {id} failed ({e}) and it still exists; not retrying"
-                );
+        // Present accounts must carry our key; an absent account needs no key check.
+        match account_state(&worker, acct.id(), false).await {
+            AccountState::Present(_) => assert!(
+                acct.view_access_key(&sk.public_key()).await.is_ok(),
+                "the saved key does not match {id}"
+            ),
+            AccountState::Absent => println!("{id}: already absent (explicit UNKNOWN_ACCOUNT)"),
+            AccountState::Unknown(e) => {
+                println!("{id}: state unknown ({e}); will be reported as uncertain")
             }
         }
+        accounts.push(acct);
     }
-    let after = worker.view_account(parent.id()).await.unwrap().balance;
-    println!(
-        "parent {} balance: {before} -> {after} ({deleted} accounts deleted)",
-        parent.id()
+    let result = delete_accounts(&worker, parent.id(), accounts, &journal, false).await;
+    println!("{result:#}");
+    assert_eq!(
+        result["overall"], "confirmed",
+        "recovery not confirmed; see the output above"
+    );
+}
+
+/// Resolves transactions a run left UNCERTAIN, by polling THEIR hashes (never by
+/// signing anything). NEARODDS_RESUME_JOURNAL=deployments/runs/<kind>-<tag>.jsonl
+/// Appends `step_resolved` to the journal for each transaction whose final
+/// result is found. The run itself is NOT continued automatically; once every
+/// uncertain step is resolved, continue by hand with the remaining operations
+/// (docs/testnet.md).
+#[tokio::test]
+#[ignore = "testnet only: reads a run journal and polls its uncertain transaction hashes"]
+async fn resolve_uncertain_on_testnet() {
+    let path = PathBuf::from(
+        std::env::var("NEARODDS_RESUME_JOURNAL")
+            .expect("set NEARODDS_RESUME_JOURNAL to a journal file"),
+    );
+    let url = std::env::var("NEARODDS_RPC_URL")
+        .unwrap_or_else(|_| "https://test.rpc.fastnear.com".to_string());
+    let journal = Journal::at(path, None);
+    let pending = unresolved_steps(&journal.events());
+    println!("{} unresolved transaction(s) in the journal", pending.len());
+    let mut still_unknown = 0;
+    for u in pending {
+        let r = lookup_tx(&url, &u.tx_hash, &u.signer);
+        println!(
+            "  {} ({}) tx {} signer {}: {r:?}",
+            u.step, u.reason, u.tx_hash, u.signer
+        );
+        match r {
+            TxLookup::Succeeded | TxLookup::Failed(_) => journal.event(json!({
+                "event": "step_resolved", "step": u.step, "tx_hash": u.tx_hash,
+                "signer": u.signer, "outcome": format!("{r:?}") })),
+            _ => still_unknown += 1,
+        }
+    }
+    assert_eq!(
+        still_unknown, 0,
+        "{still_unknown} transaction(s) are still unresolved; try again later"
     );
 }
 
@@ -1689,4 +2193,396 @@ async fn resolve_on_testnet() {
         m["status"], m["resolution"]
     );
     assert_eq!(m["status"], "Resolved");
+}
+
+// ---------------------------------------------------------------------------
+// Failure-injection and unit tests for the harness itself (all run in CI)
+// ---------------------------------------------------------------------------
+
+fn scratch_dir(label: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("nearodds-harness-{label}-{}", unique_tag()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// The operation SUCCEEDS but every status read fails. The harness must call the
+/// outcome uncertain, journal hash/signer/operation, and must NOT sign or submit
+/// the operation again. The destination balance proves a single execution.
+#[tokio::test]
+async fn status_outage_after_success_is_uncertain_and_never_resubmitted() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let dst = root
+        .create_subaccount("dst")
+        .initial_balance(NearToken::from_near(1))
+        .transact()
+        .await
+        .unwrap()
+        .into_result()
+        .unwrap();
+    let before = worker
+        .view_account(dst.id())
+        .await
+        .unwrap()
+        .balance
+        .as_yoctonear();
+    let amount = NearToken::from_millinear(250);
+
+    let dir = scratch_dir("outage");
+    let journal = Journal::at(dir.join("run.jsonl"), None);
+    let mut rec = Recorder::with_journal(journal.clone());
+    rec.patience = std::time::Duration::from_secs(2);
+    rec.inject_status_unavailable = true;
+
+    let (root2, dst_id) = (root.clone(), dst.id().clone());
+    let task = tokio::spawn(async move {
+        // The real `tx!` path: this is the code a testnet run executes.
+        tx!(
+            rec,
+            "transfer (injected status outage)",
+            root2.batch(&dst_id).transfer(amount)
+        );
+    });
+    let err = task
+        .await
+        .expect_err("an uncertain outcome must stop the run");
+    let msg = err
+        .into_panic()
+        .downcast::<String>()
+        .map(|b| *b)
+        .unwrap_or_default();
+    assert!(
+        msg.contains("UNCERTAIN") && msg.contains("NOT resubmitting"),
+        "{msg}"
+    );
+
+    // The transaction really executed (once) even though the harness could not see it.
+    let mut after = before;
+    for _ in 0..40 {
+        after = worker
+            .view_account(dst.id())
+            .await
+            .unwrap()
+            .balance
+            .as_yoctonear();
+        if after > before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await; // a duplicate would have landed by now
+    after = after.max(
+        worker
+            .view_account(dst.id())
+            .await
+            .unwrap()
+            .balance
+            .as_yoctonear(),
+    );
+    assert_eq!(
+        after - before,
+        amount.as_yoctonear(),
+        "the operation must have executed exactly once"
+    );
+
+    // Journal: one submission, one uncertain verdict with identity, no resubmission.
+    let ev = journal.events();
+    let count = |name: &str| ev.iter().filter(|e| e["event"] == name).count();
+    assert_eq!(count("step_submitting"), 1, "{ev:#?}");
+    assert_eq!(count("step_submitted"), 1);
+    assert_eq!(count("step_resubmitting"), 0);
+    assert_eq!(count("step_done"), 0);
+    let u = ev
+        .iter()
+        .find(|e| e["event"] == "step_uncertain")
+        .expect("step_uncertain");
+    assert_eq!(u["signer"], root.id().as_str());
+    assert_eq!(u["operation"], "transfer (injected status outage)");
+    assert!(u["tx_hash"].as_str().unwrap().len() >= 40);
+    // And the journal tells a resumer exactly which hash to poll.
+    let pending = unresolved_steps(&ev);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].tx_hash, u["tx_hash"].as_str().unwrap());
+    assert_eq!(pending[0].signer, root.id().as_str());
+}
+
+#[test]
+fn resolved_and_done_steps_are_not_reported_unresolved() {
+    let ev = vec![
+        json!({"event":"step_submitted","step":"a","tx_hash":"H1","signer":"x.testnet"}),
+        json!({"event":"step_done","step":"a","tx_hash":"H1"}),
+        json!({"event":"step_submitted","step":"b","tx_hash":"H2","signer":"y.testnet"}),
+        json!({"event":"step_uncertain","step":"b","tx_hash":"H2","signer":"y.testnet","reason":"rpc"}),
+        json!({"event":"step_submitted","step":"c","tx_hash":"H3","signer":"z.testnet"}),
+        json!({"event":"step_resolved","step":"c","tx_hash":"H3"}),
+    ];
+    let p = unresolved_steps(&ev);
+    assert_eq!(p.len(), 1);
+    assert_eq!(
+        (
+            p[0].step.as_str(),
+            p[0].tx_hash.as_str(),
+            p[0].signer.as_str()
+        ),
+        ("b", "H2", "y.testnet")
+    );
+}
+
+#[test]
+fn signer_parsing_matches_debug_format() {
+    // Pins the `Debug` format of `TransactionStatus` relied on by `signer_of`.
+    assert_eq!(
+        parse_signer(r#"TransactionStatus { sender_id: AccountId("a.testnet"), hash: Ab }"#),
+        "a.testnet"
+    );
+    assert_eq!(parse_signer("garbage"), "unknown");
+}
+
+#[tokio::test]
+async fn signer_of_real_status_is_the_signing_account() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let dst = root
+        .create_subaccount("d2")
+        .initial_balance(NearToken::from_near(1))
+        .transact()
+        .await
+        .unwrap()
+        .into_result()
+        .unwrap();
+    let st = root
+        .batch(dst.id())
+        .transfer(NearToken::from_millinear(1))
+        .transact_async()
+        .await
+        .unwrap();
+    assert_eq!(signer_of(&st), root.id().as_str());
+    st.await.unwrap();
+}
+
+#[test]
+fn tx_responses_are_classified_without_guessing() {
+    let ok = json!({"result":{"final_execution_status":"FINAL","status":{"SuccessValue":""},"receipts_outcome":[{"outcome":{"status":{"SuccessValue":""}}}]}});
+    assert_eq!(classify_tx_response(&ok), TxLookup::Succeeded);
+    let receipt_fail = json!({"result":{"final_execution_status":"FINAL","status":{"SuccessValue":""},"receipts_outcome":[{"outcome":{"status":{"Failure":{}}}}]}});
+    assert!(matches!(
+        classify_tx_response(&receipt_fail),
+        TxLookup::Failed(_)
+    ));
+    let missing = json!({"error":{"cause":{"name":"UNKNOWN_TRANSACTION"}}});
+    assert_eq!(classify_tx_response(&missing), TxLookup::NotFound);
+    let rate = json!({"error":{"cause":{"name":"INTERNAL_ERROR"},"message":"429"}});
+    assert!(matches!(classify_tx_response(&rate), TxLookup::Unknown(_)));
+    let pending = json!({"result":{"final_execution_status":"INCLUDED"}});
+    assert!(matches!(
+        classify_tx_response(&pending),
+        TxLookup::Unknown(_)
+    ));
+}
+
+/// The delete executes for real, but its status and every later query are
+/// unavailable. The harness must NOT claim the account is deleted or the NEAR refunded.
+#[tokio::test]
+async fn deletion_with_rpc_outage_stays_uncertain() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let journal = Journal::at(scratch_dir("del").join("run.jsonl"), None);
+    let acct = user(&worker, &root, "victim", 500, &journal).await;
+    let id = acct.id().clone();
+
+    let res = delete_accounts(&worker, root.id(), vec![acct], &journal, true).await;
+    assert_eq!(res["overall"], "uncertain", "{res:#}");
+    assert_eq!(res["accounts"][0]["status"], "uncertain", "{res:#}");
+    assert_eq!(res["refund"]["status"], "unknown", "{res:#}");
+    assert!(
+        res["accounts_deleted"].as_array().unwrap().is_empty(),
+        "{res:#}"
+    );
+    // Ground truth: the account IS gone. The harness just must not claim it without evidence.
+    let truth = account_state(&worker, &id, false).await;
+    assert_eq!(truth, AccountState::Absent);
+    assert!(journal
+        .events()
+        .iter()
+        .any(|e| e["event"] == "account_delete_uncertain"));
+}
+
+#[tokio::test]
+async fn healthy_deletion_is_confirmed_with_refund_recorded_separately() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let journal = Journal::at(scratch_dir("del-ok").join("run.jsonl"), None);
+    let acct = user(&worker, &root, "victim2", 500, &journal).await;
+    let res = delete_accounts(&worker, root.id(), vec![acct], &journal, false).await;
+    assert_eq!(res["overall"], "confirmed", "{res:#}");
+    assert_eq!(res["accounts"][0]["status"], "deleted");
+    assert_eq!(res["refund"]["status"], "confirmed");
+}
+
+#[tokio::test]
+async fn only_explicit_unknown_account_means_absent() {
+    // Real node: a missing account answers UNKNOWN_ACCOUNT.
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let ghost: near_workspaces::AccountId = "ghost.test.near".parse().unwrap();
+    assert_eq!(
+        account_state(&worker, &ghost, false).await,
+        AccountState::Absent
+    );
+    let root = worker.root_account().unwrap();
+    assert!(
+        matches!(account_state(&worker, root.id(), false).await, AccountState::Present(b) if b > 0)
+    );
+    // Injected outage and an unreachable node are Unknown, never Absent.
+    assert!(matches!(
+        account_state(&worker, &ghost, true).await,
+        AccountState::Unknown(_)
+    ));
+    assert!(matches!(
+        raw_view_account("http://127.0.0.1:1", "ghost.test.near"),
+        AccountState::Unknown(_)
+    ));
+    // Responses that are not an explicit UNKNOWN_ACCOUNT.
+    for body in [
+        json!({"error":{"name":"INTERNAL_ERROR","cause":{"name":"INTERNAL_ERROR"},"message":"429 Too Many Requests"}}),
+        json!({"error":{"name":"HANDLER_ERROR","cause":{"name":"UNAVAILABLE_SHARD"}}}),
+        json!({"error":{"name":"TIMEOUT_ERROR","cause":{"name":"TIMEOUT_ERROR"}}}),
+        json!({"unexpected": true}),
+    ] {
+        assert!(
+            matches!(classify_account_response(&body), AccountState::Unknown(_)),
+            "{body}"
+        );
+    }
+    let unknown =
+        json!({"error":{"name":"HANDLER_ERROR","cause":{"name":"UNKNOWN_ACCOUNT","info":{}}}});
+    assert_eq!(classify_account_response(&unknown), AccountState::Absent);
+}
+
+#[test]
+#[should_panic(expected = "refusing to delete the parent")]
+fn deletion_refuses_the_parent() {
+    assert_deletable("p.testnet", &"p.testnet".parse().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "refusing to delete a demo account")]
+fn deletion_refuses_persistent_demo_accounts() {
+    assert_deletable("mkt-demo-1.p.testnet", &"p.testnet".parse().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "not a sub-account of the parent")]
+fn deletion_refuses_unrelated_accounts() {
+    assert_deletable("other.testnet", &"p.testnet".parse().unwrap());
+}
+
+#[test]
+fn key_files_are_created_exclusively_and_never_overwritten() {
+    let dir = scratch_dir("keys");
+    let a = SecretKey::from_random(KeyType::ED25519);
+    let b = SecretKey::from_random(KeyType::ED25519);
+    save_key_in(&dir, "alice-x.p.testnet", &a).unwrap();
+    // A colliding second attempt is refused...
+    assert!(matches!(
+        save_key_in(&dir, "alice-x.p.testnet", &b),
+        Err(KeyError::AlreadyExists(_))
+    ));
+    // ...and the original key is intact, mode 600, dir mode 700.
+    let kept = load_verified_key(&dir, "alice-x.p.testnet").unwrap();
+    assert_eq!(kept.public_key(), a.public_key());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&key_path(&dir, "alice-x.p.testnet")), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+    }
+    // An inconsistent file (public key does not match) is not trusted.
+    std::fs::write(key_path(&dir, "bad.p.testnet"),
+        json!({"account_id":"bad.p.testnet","public_key":b.public_key().to_string(),"private_key":a.to_string()}).to_string()).unwrap();
+    assert!(load_verified_key(&dir, "bad.p.testnet").is_none());
+}
+
+/// A run-name collision: the account already exists and a key file for it
+/// already exists. The original key must survive and the run must refuse.
+#[tokio::test]
+async fn name_collision_with_a_foreign_key_refuses_and_keeps_the_original() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let dir = scratch_dir("collide");
+    let journal = Journal::at(dir.join("run.jsonl"), Some(dir.join("creds")));
+
+    // Someone else already created collide.<root> with an unrelated key,
+    // and an earlier run left a different key file for that id.
+    let foreign = SecretKey::from_random(KeyType::ED25519);
+    root.create_subaccount("collide")
+        .keys(foreign)
+        .initial_balance(NearToken::from_near(1))
+        .transact()
+        .await
+        .unwrap()
+        .into_result()
+        .unwrap();
+    let id = format!("collide.{}", root.id());
+    let original = SecretKey::from_random(KeyType::ED25519);
+    save_key_in(&dir.join("creds"), &id, &original).unwrap();
+
+    let (w, r, j) = (worker.clone(), root.clone(), journal.clone());
+    let res = tokio::spawn(async move { user(&w, &r, "collide", 500, &j).await }).await;
+    let msg = res
+        .expect_err("must refuse")
+        .into_panic()
+        .downcast::<String>()
+        .map(|b| *b)
+        .unwrap_or_default();
+    assert!(msg.contains("COLLISION"), "{msg}");
+    assert_eq!(
+        load_verified_key(&dir.join("creds"), &id)
+            .unwrap()
+            .public_key(),
+        original.public_key()
+    );
+}
+
+/// An interrupted earlier attempt: the key file exists, the account does not
+/// (or exists with exactly that key). The verified key is reused, not replaced.
+#[tokio::test]
+async fn resume_reuses_the_verified_stored_key() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let root = worker.root_account().unwrap();
+    let dir = scratch_dir("resume");
+    let creds = dir.join("creds");
+    let journal = Journal::at(dir.join("run.jsonl"), Some(creds.clone()));
+    let id = format!("resumed.{}", root.id());
+    let stored = SecretKey::from_random(KeyType::ED25519);
+    save_key_in(&creds, &id, &stored).unwrap();
+
+    // Account not created yet: created with the stored key.
+    let a1 = user(&worker, &root, "resumed", 500, &journal).await;
+    assert!(a1.view_access_key(&stored.public_key()).await.is_ok());
+    // Account now exists with that key: reused, nothing recreated or rotated.
+    let a2 = user(&worker, &root, "resumed", 500, &journal).await;
+    assert_eq!(a2.id(), a1.id());
+    assert_eq!(
+        load_verified_key(&creds, &id).unwrap().public_key(),
+        stored.public_key()
+    );
+    assert!(journal
+        .events()
+        .iter()
+        .any(|e| e["event"] == "account_reused"));
+}
+
+#[test]
+fn run_ids_are_unique_and_fit_account_name_limits() {
+    let tags: std::collections::HashSet<String> = (0..500).map(|_| unique_tag()).collect();
+    assert_eq!(tags.len(), 500, "collision among 500 run ids");
+    let t = unique_tag();
+    assert_eq!(t.len(), 14);
+    assert!(t
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    let longest = format!("probe-demo-{t}.nearodds-deploy.testnet");
+    assert!(longest.len() <= 64, "{longest}");
+    assert!(longest.parse::<near_workspaces::AccountId>().is_ok());
 }

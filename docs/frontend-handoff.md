@@ -13,7 +13,7 @@
 | **Resolver** (and token owner, deployer) | `nearodds-deploy.testnet` (only this account can resolve and mint) |
 | Market id (argument to calls) | `mkt-1` |
 | Question | Will it rain in Lagos on 2026-11-12? |
-| Observation / source | 2026-11-12 00:00-24:00 WAT (UTC+1) / NiMet daily weather report, Lagos, 2026-11-12 |
+| Observation / source | 2026-11-12 00:00 WAT to 2026-11-13 00:00 WAT (UTC+1) / NiMet daily weather report, Lagos, 2026-11-12. The contract enforces only the trading cutoff; the trusted resolver must wait for the report (docs/testnet.md, "Timing"). |
 | **Trading cutoff** | `2026-11-11T23:00:00Z` = 2026-11-12 00:00 WAT, `1794438000000000000` ns. Immutable; the market is `Open` until then |
 | Token metadata (read it, do not hardcode) | name `NearOdds TEST Collateral (no value)`, symbol **`tNOC`**, **6 decimals**; 1 token = `"1000000"` base units. Call `ft_metadata` on the token. Label amounts with the returned symbol and keep a visible "test token, no value" notice (the name says TEST; the symbol is `tNOC`, not `TEST`) |
 | Contract schema | 3 |

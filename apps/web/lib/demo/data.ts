@@ -1,3 +1,4 @@
+import { DEFAULT_LIMITS } from "../trading";
 import type { ActivityItem, Category, HistoryPoint, Market, Offer, OpenOffer, Outcome, Position } from "../types";
 
 /** Fixed demo clock so dates and statuses are deterministic. */
@@ -80,7 +81,7 @@ export const demoMarkets: Market[] = seeds.map((s) => {
   const status = s.status ?? "open";
   const resolved = status === "resolved";
   return {
-    id: s.id, question: s.q, category: s.cat, tag: s.tag, icon: s.icon, description: s.desc, status,
+    id: s.id, token: { symbol: "TEST", decimals: 6, isTest: true }, limits: DEFAULT_LIMITS, quotes: null, question: s.q, category: s.cat, tag: s.tag, icon: s.icon, description: s.desc, status,
     createdAt: NOW - s.ageD * D, closesAt: NOW + s.closeH * H,
     volume: tok(s.vol), lastYes: s.yes == null ? null : c(s.yes), prevYes: s.prev == null || s.yes == null ? null : c(s.prev),
     hasHistory: !s.noHistory && s.yes != null, featured: s.featured, trendScore: s.trend,
@@ -130,7 +131,7 @@ export function demoOffers(): Offer[] {
     const r = rng("book" + m.id);
     const mid = Math.round(Number(m.lastYes) / 10_000);
     const mk = (side: "buy" | "sell", outcome: Outcome, cents: number, i: number): Offer => ({
-      id: `${m.id}-${outcome}-${side}-${i}`, marketId: m.id, outcome, side, price: c(cents),
+      id: `${m.id}-${outcome}-${side}-${i}`, offerId: `${m.id}-${outcome}-${side}-${i}`, marketId: m.id, outcome, side, price: c(cents),
       qty: tok(10 + Math.floor(r() * 18) * 5), owner: `maker${Math.floor(r() * 90 + 10)}.testnet`, createdAt: NOW - Math.floor(r() * 20) * H,
     });
     for (let i = 0; i < 4; i++) {
@@ -172,8 +173,8 @@ export function demoInitialPositions(): Position[] {
 
 export function demoInitialOffers(): OpenOffer[] {
   return [
-    { id: "mine-1", marketId: "btc-150k", outcome: "YES", side: "buy", price: c(24), qty: tok(50), owner: DEMO_ACCOUNT, createdAt: NOW - 5 * H, status: "open" },
-    { id: "mine-2", marketId: "near-10-dec", outcome: "YES", side: "sell", price: c(60), qty: tok(15), owner: DEMO_ACCOUNT, createdAt: NOW - 30 * H, status: "open" },
+    { id: "mine-1", offerId: "mine-1", marketId: "btc-150k", outcome: "YES", side: "buy", price: c(24), qty: tok(50), owner: DEMO_ACCOUNT, createdAt: NOW - 5 * H, status: "open" },
+    { id: "mine-2", offerId: "mine-2", marketId: "near-10-dec", outcome: "YES", side: "sell", price: c(60), qty: tok(15), owner: DEMO_ACCOUNT, createdAt: NOW - 30 * H, status: "open" },
   ];
 }
 

@@ -25,7 +25,7 @@ export function parseFilters(sp: URLSearchParams): Filters {
   const sort = sp.get("sort") as SortKey | null;
   const view = sp.get("view");
   return {
-    category: (["Crypto", "Sports", "Politics", "Economy", "Technology"].includes(cat ?? "") ? cat : null) as Category | null,
+    category: cat || null, // any category the backend reports is valid; unknown ones simply match nothing
     status: list("status"), period: list("period"), tags: list("tag"), saved: sp.get("saved") === "1",
     q: sp.get("q") ?? "", sort: SORTS.some((s) => s.key === sort) ? sort! : view === "new" ? "newest" : "trending",
     view: view === "trending" || view === "new" ? view : null,
@@ -58,7 +58,7 @@ const matchPeriod = (m: Market, now: number, p: string) => {
 export function applyFilters(markets: Market[], f: Filters, now: number, bookmarks: string[], skip?: "status" | "period" | "tags"): Market[] {
   const q = f.q.trim().toLowerCase();
   return markets.filter((m) =>
-    (!f.category || m.category === f.category) &&
+    (!f.category || m.category?.toLowerCase() === f.category.toLowerCase()) &&
     (!q || m.question.toLowerCase().includes(q)) &&
     (!f.saved || bookmarks.includes(m.id)) &&
     (f.view !== "new" || (m.createdAt != null && now - m.createdAt <= 14 * DAY)) &&

@@ -2,21 +2,22 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useAdapterData, useApp } from "@/lib/app-context";
-import { compact, movement, timeUntil, yesPct } from "@/lib/format";
+import { basisLabel, compact, timeUntil, yesPct } from "@/lib/format";
 import type { Market } from "@/lib/types";
 import { Icon } from "../ui/Icon";
 import { BookmarkButton, Skeleton, TopicIcon } from "../ui/bits";
 import { ProbabilityChart } from "../trading/ProbabilityChart";
 
 export function FeaturedMarket({ markets }: { markets: Market[] | null }) {
-  const { adapter, now } = useApp();
+  const { now } = useApp();
   const [i, setI] = useState(0);
   const feats = markets ? markets.filter((m) => m.featured && m.status === "open") : [];
   const list = feats.length ? feats : markets?.slice(0, 1) ?? [];
   const m = list.length ? list[i % list.length] : null;
   const hist = useAdapterData((a) => (m ? a.getHistory(m.id) : Promise.resolve(null)), [m?.id]);
+  const mvq = useAdapterData((a) => (m ? a.getMovement(m, now) : Promise.resolve(null)), [m?.id, m?.lastYes?.toString()]);
   if (!markets || !m) return <Skeleton className="h-[330px]" />;
-  const mv = movement(m);
+  const mv = mvq.data;
   const pct = yesPct(m);
   const go = (d: number) => setI((i + d + list.length) % list.length);
   return (
@@ -42,6 +43,7 @@ export function FeaturedMarket({ markets }: { markets: Market[] | null }) {
         <div className="flex min-w-0 flex-col justify-between gap-3">
           <div>
             <p className="text-3xl font-semibold leading-none"><span className="text-yes">{pct == null ? "—" : `${pct}%`}</span> <span className="text-sm font-medium text-mute">YES</span></p>
+            {m.yesBasis && <p className="text-[11px] text-mute" data-testid="featured-basis">{basisLabel(m.yesBasis)}</p>}
             <p className="mt-1.5 text-sm text-mute">NO <span className="text-no">{pct == null ? "—" : `${100 - pct}%`}</span>{mv && <span className={`ml-2 text-xs font-medium ${mv.delta >= 0 ? "text-yes" : "text-no"}`}>{mv.label}</span>}</p>
           </div>
           <div className="flex gap-2">
@@ -50,11 +52,11 @@ export function FeaturedMarket({ markets }: { markets: Market[] | null }) {
           </div>
         </div>
         <div className="min-w-0 self-stretch md:self-end">
-          <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} compact height={170} />
+          <ProbabilityChart points={hist.data} loading={hist.loading} error={hist.error} compact height={170} partial={m.coverage && !m.coverage.historyComplete ? m.coverage.note : undefined} />
         </div>
       </div>
       <div className="mt-3 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 text-xs text-mute">
-        <span>{m.volume == null ? "Volume unavailable" : `${compact(m.volume)} ${adapter.symbol} volume`}</span>
+        <span>{m.volume == null ? "Volume unavailable" : `${m.volumePartial && m.volume > 0n ? "≥ " : ""}${m.volume > 0n && m.volume < 1_000_000n ? `${Number(m.volume) / 1e6}` : compact(m.volume)} ${m.token.symbol} volume`}</span>
         <span>{timeUntil(m.closesAt, now)}</span>
         <Link href={`/markets/${m.id}`} className="font-semibold text-brand hover:underline">Open market →</Link>
         {list.length > 1 && (

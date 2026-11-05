@@ -10,10 +10,14 @@ const catColor: Record<string, string> = {
   Economy: "from-[#2fb4a6] to-[#145f57]", Technology: "from-[#d9568f] to-[#7d2551]", _: "from-[#3a4150] to-[#1f242d]",
 };
 
+const FALLBACK = ["from-[#2f8fd9] to-[#134c78]", "from-[#2fb4a6] to-[#145f57]", "from-[#8a5cf0] to-[#4a2c96]", "from-[#e8913a] to-[#8a4a12]", "from-[#d9568f] to-[#7d2551]"];
+/** Any category the backend returns gets a stable colour; the known ones keep theirs. */
+const gradientFor = (c: string | null | undefined) => (!c ? catColor._ : catColor[c] ?? FALLBACK[[...c].reduce((a, ch) => a + ch.charCodeAt(0), 0) % FALLBACK.length]);
+
 export function TopicIcon({ market, size = 40 }: { market: Pick<Market, "icon" | "category">; size?: number }) {
   return (
     <span aria-hidden style={{ width: size, height: size, fontSize: size * 0.42 }}
-      className={`grid shrink-0 place-items-center rounded-xl bg-gradient-to-br font-semibold text-white ${catColor[market.category ? market.category : "_"]}`}>
+      className={`grid shrink-0 place-items-center rounded-xl bg-gradient-to-br font-semibold text-white ${gradientFor(market.category)}`}>
       {market.icon || market.category?.[0] || "?"}
     </span>
   );
@@ -32,11 +36,11 @@ export function BookmarkButton({ id, className = "" }: { id: string; className?:
 }
 
 /** Semicircular probability gauge. */
-export function Gauge({ price }: { price: bigint | null }) {
+export function Gauge({ price, basis }: { price: bigint | null; basis?: string }) {
   const pct = price == null ? null : percent(price);
   const r = 22, c = Math.PI * r;
   return (
-    <div className="relative h-[34px] w-[52px] shrink-0 text-center" aria-label={pct == null ? "No price yet" : `${pct}% chance YES`} role="img">
+    <div className="relative h-[34px] w-[52px] shrink-0 text-center" aria-label={pct == null ? "No price yet" : `${pct}% chance YES${basis ? ` (${basis})` : ""}`} title={pct == null ? undefined : basis ? `${pct}% chance YES: ${basis}` : undefined} role="img">
       <svg width="52" height="30" viewBox="0 0 52 30" aria-hidden>
         <path d="M4 28a22 22 0 0 1 44 0" fill="none" stroke="#2a3039" strokeWidth="4" strokeLinecap="round" />
         {pct != null && <path d="M4 28a22 22 0 0 1 44 0" fill="none" stroke="#35d07f" strokeWidth="4" strokeLinecap="round" strokeDasharray={`${(pct / 100) * c} ${c}`} />}

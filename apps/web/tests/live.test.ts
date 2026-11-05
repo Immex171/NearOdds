@@ -4,11 +4,10 @@ import type { ConfigView, MarketView } from "@nearodds/types";
 // @ts-expect-error plain ESM script without types
 import { deriveEnv, envConflicts } from "../scripts/deployment.mjs";
 import { checkAgreement } from "@/lib/near/deployment";
-import { observationFromRules, toMarket } from "@/lib/near/market-map";
 import { assertAllReceiptsOk, successValue } from "@/lib/near/outcome";
 import { friendlyError } from "@/lib/near/adapter";
 import { DEFAULT_LIMITS, parsePrice, parseQuantity } from "@/lib/trading";
-import { nearStr, cutoffLabel } from "@/lib/format";
+import { nearStr } from "@/lib/format";
 
 const manifest = JSON.parse(readFileSync(new URL("../../../deployments/testnet-demo.json", import.meta.url), "utf8"));
 
@@ -56,6 +55,15 @@ const input = { marketAccount: "m", tokenAccount: cfg.collateral_token_id, marke
 
 describe("on-chain agreement", () => {
   it("accepts a consistent deployment", () => expect(checkAgreement(input)).toEqual([]));
+  it("compares the API's claim about a market with the chain", () => {
+    const claim = { token: { symbol: "tNOC", decimals: 6 }, trading: cfg.trading, question: "q", cutoffNs: "1" };
+    const m = { ...mv, question: "q", split_cutoff_ns: "1" } as MarketView;
+    expect(checkAgreement({ ...input, market: m, claim })).toEqual([]);
+    expect(checkAgreement({ ...input, market: m, claim: { ...claim, token: { symbol: "XYZ", decimals: 6 } } }).join()).toMatch(/lists the token as XYZ/);
+    expect(checkAgreement({ ...input, market: m, claim: { ...claim, question: "other" } }).join()).toMatch(/question/);
+    expect(checkAgreement({ ...input, market: m, claim: { ...claim, cutoffNs: "2" } }).join()).toMatch(/cutoff/);
+    expect(checkAgreement({ ...input, market: m, claim: { ...claim, trading: { ...cfg.trading, price_tick: "20000" } } }).join()).toMatch(/price_tick/);
+  });
   it("reports each disagreement", () => {
     expect(checkAgreement({ ...input, tokenAccount: "x.testnet" }).join()).toMatch(/collateral token/);
     expect(checkAgreement({ ...input, marketId: "mkt-2" }).join()).toMatch(/market mkt-1/);
@@ -63,36 +71,6 @@ describe("on-chain agreement", () => {
     expect(checkAgreement({ ...input, cfg: { ...cfg, schema_version: 4 } }).join()).toMatch(/schema 4/);
     expect(checkAgreement({ ...input, meta: { ...meta, symbol: "" } }).join()).toMatch(/symbol/);
   });
-});
-
-describe("live market mapping", () => {
-  const view = {
-    market_id: "mkt-1", question: "Will it rain in Lagos on 2026-11-12?", rules: manifest.market_terms.rules, resolution_source: manifest.market_terms.resolution_source,
-    split_cutoff_ns: manifest.split_cutoff_ns, split_open: true, trading_cutoff_ns: manifest.split_cutoff_ns, trading_open: true, status: "Open",
-    awaiting_resolution: false, resolved: false, merge_open: true, resolver_id: "nearodds-deploy.testnet", resolution: null,
-  } as unknown as MarketView;
-  it("invents no category, creation date or volume", () => {
-    const m = toMarket(view, cfg);
-    expect(m.category).toBeNull();
-    expect(m.createdAt).toBeNull();
-    expect(m.volume).toBeNull();
-    expect(m.lastYes).toBeNull();
-    expect(m.hasHistory).toBe(false);
-  });
-  it("keeps the trading cutoff separate from the observation period", () => {
-    const m = toMarket(view, cfg);
-    expect(new Date(m.closesAt).toISOString()).toBe("2026-11-11T23:00:00.000Z");
-    expect(m.resolution.observation.text).toBe("the Lagos calendar day 2026-11-12, 00:00 to 24:00 WAT (UTC+1)");
-    expect(m.resolution.ifMissing).toBe(cfg.resolution_model);
-    expect(cutoffLabel(m.closesAt)).toBe("Nov 11, 2026, 11:00 PM UTC (Nov 12, 2026, 12:00 AM WAT)");
-  });
-  it("maps the contract status, not the clock", () => {
-    expect(toMarket({ ...view, status: "AwaitingResolution", awaiting_resolution: true, trading_open: false, split_open: false }, cfg).status).toBe("awaiting");
-    const r = toMarket({ ...view, status: "Resolved", resolved: true, resolution: { outcome: "Yes", resolver_id: "r", resolved_at_ns: "1", evidence: "link" } }, cfg);
-    expect(r.status).toBe("resolved");
-    expect(r.resolution.outcome).toBe("YES");
-  });
-  it("returns null when rules state no observation period", () => expect(observationFromRules("Resolves YES if X.")).toBeNull());
 });
 
 describe("receipts and results", () => {

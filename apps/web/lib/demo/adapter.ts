@@ -1,7 +1,8 @@
 import { mulPrice } from "../amounts";
+import { movement } from "../format";
 import { DEFAULT_LIMITS, MAX_OPEN_OFFERS, MAX_PRICE, MIN_ORDER_QUANTITY, MIN_PRICE, PRICE_TICK, QUANTITY_LOT } from "../trading";
 import type {
-  AccountState, ActivityItem, Capabilities, CreateOfferRequest, DataAdapter, HistoryPoint, Market, Offer, OpenOffer, Position,
+  AccountState, ActivityItem, Capabilities, CategoryCount, CreateOfferRequest, DataAdapter, Deployment, HistoryPoint, Market, Offer, OpenOffer, Position,
   RedeemPreview, TxReporter,
 } from "../types";
 import {
@@ -58,6 +59,9 @@ export class DemoAdapter implements DataAdapter {
   id = "demo" as const;
   label = "Demo";
   symbol = "TEST";
+  freshness() { return null; }
+  deployment(): Deployment { return { state: "ok" }; }
+  async verify() { /* demo data needs no chain verification */ }
   capabilities = DEMO_CAPABILITIES;
   limits = DEFAULT_LIMITS;
   private s = load() ?? initial();
@@ -131,6 +135,13 @@ export class DemoAdapter implements DataAdapter {
   }
 
   async listMarkets() { return clone(this.s.markets); }
+  async listCategories(): Promise<CategoryCount[]> {
+    const n = new Map<string, number>();
+    for (const m of this.s.markets) if (m.category) n.set(m.category, (n.get(m.category) ?? 0) + 1);
+    return [...n].map(([category, count]) => ({ category, count }));
+  }
+  async searchMarkets(q: string) { const t = q.trim().toLowerCase(); return clone(this.s.markets.filter((m) => m.question.toLowerCase().includes(t))); }
+  async getMovement(m: Market) { return movement(m); }
   async getMarket(id: string) { const m = this.s.markets.find((x) => x.id === id); return m ? { ...m } : null; }
   async getBook(id: string) { return clone(this.s.book.filter((o) => o.marketId === id)).concat(clone(this.s.mine.filter((o) => o.marketId === id))); }
   async getHistory(id: string): Promise<HistoryPoint[] | null> { const m = this.s.markets.find((x) => x.id === id); return m ? demoHistory(m) : null; }
@@ -142,12 +153,15 @@ export class DemoAdapter implements DataAdapter {
     if (accountId !== DEMO_ACCOUNT) return null;
     const committed = this.s.mine.filter((o) => o.side === "buy").reduce((a, o) => a + mulPrice(o.price, o.qty), 0n);
     return {
-      accountId, isDemo: true, walletBalance: this.s.wallet, available: this.s.available, committed, maxOpenOffers: MAX_OPEN_OFFERS,
-      pendingWithdrawal: this.s.pending, positions: this.withReserved(), offers: clone(this.s.mine), activity: [...this.s.log],
+      accountId, isDemo: true,
+      wallets: [{ tokenId: "demo", symbol: this.symbol, balance: this.s.wallet, tokenRegistered: true }],
+      // One pooled balance: the demo has no separate market contracts.
+      holdings: [{ marketRef: "*", symbol: this.symbol, registered: null, available: this.s.available, committed, pendingWithdrawal: this.s.pending, maxOpenOffers: MAX_OPEN_OFFERS }],
+      positions: this.withReserved(), offers: clone(this.s.mine), activity: [...this.s.log], withdrawals: [],
     };
   }
 
-  deposit(amount: bigint, r: TxReporter) {
+  deposit(_m: Market, amount: bigint, r: TxReporter) {
     return this.run(r, () => {
       if (amount <= 0n) throw new Error("Enter an amount");
       if (amount > this.s.wallet) throw new Error("Insufficient wallet balance");
@@ -155,7 +169,7 @@ export class DemoAdapter implements DataAdapter {
       this.note("Deposited collateral (demo)", undefined, "event");
     }, "Demo deposit completed");
   }
-  async withdraw(amount: bigint, r: TxReporter) {
+  async withdraw(_m: Market, amount: bigint, r: TxReporter) {
     if (amount <= 0n || amount > this.s.available) { r({ phase: "failed", message: "Insufficient available collateral" }); throw new Error("Insufficient available collateral"); }
     this.s.available -= amount; this.s.pending += amount; this.emit();
     try {
@@ -165,7 +179,8 @@ export class DemoAdapter implements DataAdapter {
       }, "Demo withdrawal completed");
     } catch (e) { this.s.pending -= amount; this.s.available += amount; this.emit(); throw e; }
   }
-  split(marketId: string, amount: bigint, r: TxReporter) {
+  split(mk: Market, amount: bigint, r: TxReporter) {
+    const marketId = mk.id;
     return this.run(r, () => {
       const m = this.market(marketId);
       if (m.status !== "open") throw new Error("Market is not open");
@@ -175,7 +190,8 @@ export class DemoAdapter implements DataAdapter {
       this.note(`Created ${amount / 1_000_000n} YES + NO shares`, marketId, "event");
     }, "Demo YES + NO shares created");
   }
-  merge(marketId: string, amount: bigint, r: TxReporter) {
+  merge(mk: Market, amount: bigint, r: TxReporter) {
+    const marketId = mk.id;
     return this.run(r, () => {
       this.market(marketId);
       const y = this.pos(marketId, "YES"), n = this.pos(marketId, "NO");
@@ -186,7 +202,8 @@ export class DemoAdapter implements DataAdapter {
     }, "Demo YES + NO shares combined");
   }
 
-  fillOffer(offerId: string, qty: bigint, r: TxReporter) {
+  fillOffer(_m: Market, offer: Offer, qty: bigint, r: TxReporter) {
+    const offerId = offer.id;
     return this.run(r, () => {
       const o = this.s.book.find((x) => x.id === offerId);
       if (!o) throw new Error("Offer no longer available");
@@ -214,7 +231,7 @@ export class DemoAdapter implements DataAdapter {
     }, "Demo trade completed");
   }
 
-  createOffer(req: CreateOfferRequest, r: TxReporter) {
+  createOffer(_m: Market, req: CreateOfferRequest, r: TxReporter) {
     const { marketId, outcome, side, qty, price, expiresAt } = req;
     return this.run(r, () => {
       const m = this.market(marketId);
@@ -232,12 +249,13 @@ export class DemoAdapter implements DataAdapter {
         p.qty -= qty; this.prune();
       }
       if (expiresAt != null && expiresAt <= DEMO_NOW) throw new Error("Expiry must be in the future");
-      this.s.mine.push({ id: `mine-${this.s.seq++}`, marketId, outcome, side, price, qty, owner: DEMO_ACCOUNT, createdAt: DEMO_NOW + this.s.seq * 60_000, status: "open", expiresAt: expiresAt ?? null });
+      { const nid = `mine-${this.s.seq++}`; this.s.mine.push({ id: nid, offerId: nid, marketId, outcome, side, price, qty, owner: DEMO_ACCOUNT, createdAt: DEMO_NOW + this.s.seq * 60_000, status: "open", expiresAt: expiresAt ?? null }); }
       this.note(`Placed limit ${side} ${Number(qty) / 1e6} ${outcome} at ${Number(price) / 1e6} (demo)`, marketId, "offer");
     }, "Demo limit offer placed");
   }
 
-  cancelOffer(offerId: string, r: TxReporter) {
+  cancelOffer(_m: Market, offer: Offer, r: TxReporter) {
+    const offerId = offer.id;
     return this.run(r, () => {
       const o = this.s.mine.find((x) => x.id === offerId);
       if (!o) throw new Error("Offer not found");
@@ -248,7 +266,8 @@ export class DemoAdapter implements DataAdapter {
     }, "Demo offer cancelled");
   }
 
-  async redeemPreview(marketId: string): Promise<RedeemPreview | null> {
+  async redeemPreview(mk: Market): Promise<RedeemPreview | null> {
+    const marketId = mk.id;
     const m = this.s.markets.find((x) => x.id === marketId);
     if (!m || m.status !== "resolved" || !m.resolution.outcome) return null;
     const mine = this.s.positions.filter((p) => p.marketId === marketId);
@@ -259,7 +278,8 @@ export class DemoAdapter implements DataAdapter {
       releasedCollateral: 0n, releasedShares: 0n, offersToRelease: 0, availableAfter: this.s.available + win,
     };
   }
-  redeem(marketId: string, r: TxReporter) {
+  redeem(mk: Market, r: TxReporter) {
+    const marketId = mk.id;
     return this.run(r, () => {
       const m = this.market(marketId);
       if (m.status !== "resolved" || !m.resolution.outcome) throw new Error("Market is not resolved");

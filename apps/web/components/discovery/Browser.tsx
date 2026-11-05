@@ -7,12 +7,13 @@ import { Modal } from "../ui/Modal";
 import { Btn, EmptyState, ErrorState } from "../ui/bits";
 import { FilterRail } from "./FilterRail";
 import { MarketGrid } from "./MarketGrid";
+import { DataNotice } from "../shell/DataNotice";
 
 const CHIP = "inline-flex min-h-8 items-center rounded-full border px-3 text-[13px] font-medium whitespace-nowrap";
 
 /** Heading, chips, sort, filter drawer, grid. `rail` shows the sticky left filter rail on desktop. */
 export function Browser({ f, setF, rail, title }: { f: Filters; setF: (f: Filters) => void; rail: boolean; title: string }) {
-  const { markets, marketsError, now, bookmarks, refresh } = useApp();
+  const { markets, marketsError, now, bookmarks, refresh, categories, adapter, auth } = useApp();
   const [drawer, setDrawer] = useState(false);
   const shown = useMemo(() => (markets ? sortMarkets(applyFilters(markets, f, now, bookmarks), f.sort, now) : null), [markets, f, now, bookmarks]);
   const clear = () => setF({ ...f, status: [], period: [], tags: [], saved: false, q: "" });
@@ -48,9 +49,9 @@ export function Browser({ f, setF, rail, title }: { f: Filters; setF: (f: Filter
         </div>
         {(chips.length > 0 || !rail) && (
           <div className="no-scrollbar mt-3 flex items-center gap-2 overflow-x-auto" role="group" aria-label="Active filters">
-            {!rail && ["All", "Crypto", "Sports", "Politics", "Economy", "Technology"].map((c) => {
-              const on = (c === "All" && !f.category) || f.category === c;
-              return <button key={c} aria-pressed={on} onClick={() => setF({ ...f, category: c === "All" ? null : (c as Filters["category"]) })}
+            {!rail && ["All", ...categories.map((x) => x.category)].map((c) => {
+              const on = (c === "All" && !f.category) || f.category?.toLowerCase() === c.toLowerCase();
+              return <button key={c} aria-pressed={on} onClick={() => setF({ ...f, category: c === "All" ? null : c })}
                 className={`${CHIP} ${on ? "border-fg bg-fg text-page" : "border-line text-mute hover:text-fg"}`}>{c}</button>;
             })}
             {chips.map((c) => <button key={c.label} onClick={c.on} className={`${CHIP} border-brand/50 bg-brand/15 text-[#c5ccff]`}>{c.label} <span aria-hidden className="ml-1.5">×</span><span className="sr-only">remove</span></button>)}
@@ -58,10 +59,13 @@ export function Browser({ f, setF, rail, title }: { f: Filters; setF: (f: Filter
           </div>
         )}
         <div className="mt-4">
-          {marketsError ? <ErrorState message={marketsError} onRetry={refresh} />
-            : shown && shown.length === 0 ? (
+          <div className="mb-3"><DataNotice /></div>
+          {marketsError && !markets ? <ErrorState message={marketsError} onRetry={refresh} />
+            : markets && markets.length === 0 ? (
+              <EmptyState title="No markets are listed yet" body="Markets created by the keeper appear here automatically, without reloading the app." />
+            ) : shown && shown.length === 0 ? (
               <EmptyState title="No markets match these filters"
-                body={f.saved && bookmarks.length === 0 ? "You haven't saved any markets yet. Use the bookmark icon on a card to save one." : "Try removing a filter or searching for something else."}
+                body={f.saved && bookmarks.length === 0 ? (adapter.id === "near" && auth.state !== "signed-in" ? "Sign in with your wallet to see your saved markets." : "You haven't saved any markets yet. Use the bookmark icon on a card to save one.") : "Try removing a filter or searching for something else."}
                 action={<Btn variant="outline" onClick={clear}>Clear filters</Btn>} />
             ) : <MarketGrid markets={shown} cols={rail ? "category" : "home"} />}
         </div>

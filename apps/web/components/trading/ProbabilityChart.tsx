@@ -10,10 +10,12 @@ const RANGES = [
 const fmtTime = (t: number, long: boolean) =>
   new Intl.DateTimeFormat("en-US", long ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric" }).format(t);
 
-export function ProbabilityChart({ points, loading, error, compact = false, height = 260, demo = false, showRanges = true, unavailable }: {
+export function ProbabilityChart({ points, loading, error, compact = false, height = 260, demo = false, showRanges = true, unavailable, partial }: {
   points: HistoryPoint[] | null; loading?: boolean; error?: string | null; compact?: boolean; height?: number; demo?: boolean; showRanges?: boolean;
   /** Set when the data source has no history at all (live mode without an indexer). */
   unavailable?: string;
+  /** Set when the history is incomplete: shown as a label so a partial chart is never read as the full record. */
+  partial?: string;
 }) {
   const [range, setRange] = useState<(typeof RANGES)[number]["key"]>(compact ? "All" : "All");
   const [width, setWidth] = useState(600);
@@ -38,11 +40,19 @@ export function ProbabilityChart({ points, loading, error, compact = false, heig
 
   if (loading) return <div aria-hidden className="skeleton w-full" style={{ height }} />;
   if (error) return <div role="alert" style={{ height }} className="grid place-items-center rounded-xl border border-line text-center text-mute"><p>Price history is unavailable.<br /><span className="text-xs">{error}</span></p></div>;
-  if (unavailable && (!points || points.length < 2)) {
-    return <div role="status" style={{ height }} className="grid place-items-center rounded-xl border border-dashed border-line px-4 text-center text-mute" data-testid="history-unavailable"><p>Price history unavailable.<br /><span className="text-xs">{unavailable}</span></p></div>;
-  }
+  const partialEl = partial ? <p data-testid="history-partial" className="mt-1.5 rounded-md bg-[#e8913a]/10 px-2 py-1 text-[11px] text-[#f3b36b]"><b>Partial history.</b> {partial}</p> : null;
   if (!points || points.length < 2) {
-    return <div style={{ height }} className="grid place-items-center rounded-xl border border-dashed border-line px-4 text-center text-mute"><p>No price history yet.<br /><span className="text-xs">A chart appears after the first trades.</span></p></div>;
+    const one = points?.length === 1;
+    return (
+      <div>
+        <div role="status" style={{ height }} className="grid place-items-center rounded-xl border border-dashed border-line px-4 text-center text-mute" data-testid={unavailable && !one ? "history-unavailable" : "history-sparse"}>
+          {one ? <p>Only one confirmed trade so far ({(points![0].p * 100).toFixed(0)}% YES).<br /><span className="text-xs">A line needs at least two points; it appears after the next trade.</span></p>
+            : unavailable ? <p>Price history unavailable.<br /><span className="text-xs">{unavailable}</span></p>
+            : <p>No price history yet.<br /><span className="text-xs">A chart appears after the first trades.</span></p>}
+        </div>
+        {partialEl}
+      </div>
+    );
   }
 
   const padL = 4, padR = compact ? 36 : 44, padT = 8, padB = compact ? 8 : 22;
@@ -96,9 +106,10 @@ export function ProbabilityChart({ points, loading, error, compact = false, heig
               ))}
             </div>
           ) : <span />}
-          {demo && <span className="text-xs text-mute">Probability of YES (%) · simulated history</span>}
+          {demo ? <span className="text-xs text-mute">Probability of YES (%) · simulated history</span> : <span className="text-xs text-mute">Hourly closes of confirmed YES trades</span>}
         </div>
       )}
+      {partialEl}
     </div>
   );
 }

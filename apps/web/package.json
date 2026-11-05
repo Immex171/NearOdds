@@ -14,7 +14,9 @@
     "test": "vitest run",
     "e2e": "node tests/e2e/journey.mjs",
     "deployment:sync": "node scripts/sync-deployment.mjs",
-    "deployment:check": "node scripts/sync-deployment.mjs --check --online"
+    "deployment:check": "node scripts/sync-deployment.mjs --check --online",
+    "e2e:integration": "bash tests/e2e/run-integration.sh",
+    "test:sandbox": "NEARODDS_SANDBOX=1 vitest run tests/sandbox.test.ts --testTimeout=300000"
   },
   "dependencies": {
     "@hot-labs/near-connect": "^0.12.0",

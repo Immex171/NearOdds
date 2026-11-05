@@ -7,7 +7,7 @@ import { Icon } from "../ui/Icon";
 import { Badge, Btn } from "../ui/bits";
 
 export function AccountMenu() {
-  const { session, accountId, disconnect, setConnectOpen, setHelpOpen, resetDemo, rejectNext, setRejectNext, liveConfigured, exitDemo } = useApp();
+  const { session, accountId, disconnect, setConnectOpen, setHelpOpen, resetDemo, rejectNext, setRejectNext, liveConfigured, exitDemo, auth, signIn, signOut } = useApp();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -19,7 +19,7 @@ export function AccountMenu() {
   const item = "block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-white/10";
   const close = () => setOpen(false);
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative" data-auth={auth.state}>
       {session.kind === "none" ? (
         <div className="flex items-center gap-1">
           <span className="hidden md:block"><Btn onClick={() => setConnectOpen(true)}>Connect wallet</Btn></span>
@@ -38,7 +38,7 @@ export function AccountMenu() {
           {session.kind !== "none" && (
             <div className="px-3 py-2">
               <p className="truncate text-sm font-semibold">{session.kind === "demo" ? "Demo account" : shortAccount(accountId!)}</p>
-              {session.kind === "demo" ? <Badge tone="brand">Sample balances only</Badge> : <Badge tone="yes">Testnet</Badge>}
+              {session.kind === "demo" ? <Badge tone="brand">Sample balances only</Badge> : <span className="flex flex-wrap gap-1"><Badge tone="yes">Testnet</Badge>{auth.state === "signed-in" && <Badge tone="brand">Signed in</Badge>}</span>}
             </div>
           )}
           <div className="md:hidden">
@@ -46,6 +46,13 @@ export function AccountMenu() {
             <Link role="menuitem" className={item} href="/portfolio" onClick={close}>Portfolio</Link>
           </div>
           {session.kind !== "none" && <Link role="menuitem" className={item} href="/funds" onClick={close}>Funds</Link>}
+          {session.kind === "wallet" && auth.state !== "signed-in" && (
+            <button role="menuitem" className={`${item} font-semibold text-brand`} disabled={auth.state === "signing"} data-testid="sign-in" onClick={() => { close(); void signIn(); }}>
+              {auth.state === "signing" ? "Waiting for wallet…" : "Sign in (watchlist & faucet)"}
+            </button>
+          )}
+          {session.kind === "wallet" && auth.state === "error" && <p role="alert" className="px-3 pb-1 text-xs text-no">{auth.message}</p>}
+          {session.kind === "wallet" && auth.state === "signed-in" && <button role="menuitem" className={item} data-testid="sign-out" onClick={() => { close(); void signOut(); }}>Sign out of NearOdds</button>}
           <button role="menuitem" className={item} onClick={() => { close(); setHelpOpen(true); }}>How it works</button>
           {session.kind === "demo" && <button role="menuitem" className={item} onClick={() => { close(); resetDemo(); }}>Reset demo</button>}
           {session.kind === "demo" && liveConfigured && <button role="menuitem" className={`${item} font-semibold text-brand`} onClick={() => { close(); exitDemo(); }}>Switch to live testnet</button>}

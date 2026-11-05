@@ -20,14 +20,15 @@ export function OpenOffersList({ offers }: { offers: OpenOffer[] }) {
           <li key={o.id} className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_110px_90px_110px_110px] md:items-center">
             <div className="min-w-0">
               <Link href={`/markets/${o.marketId}`} className="line-clamp-2 font-medium hover:underline">{m?.question ?? o.marketId}</Link>
+              {m?.contract && <p className="mt-0.5 truncate text-[11px] text-mute" title={`${m.contract.contractId} · offer #${o.offerId}`}>{m.contract.contractId} · offer #{o.offerId}</p>}
               <div className="mt-1 flex items-center gap-2"><Badge tone={o.outcome === "YES" ? "yes" : "no"}>{o.outcome}</Badge><Badge>{o.side === "buy" ? "Buy" : "Sell"}</Badge></div>
             </div>
-            <Cell k="Price" v={`${priceStr(o.price)} ${adapter.symbol}`} />
+            <Cell k="Price" v={`${priceStr(o.price)} ${m?.token.symbol ?? ""}`} />
             <Cell k="Remaining" v={formatUnits(o.qty, 0, 2)} />
             <Cell k="Status" v={o.fillable === false ? "Not fillable" : "Open"} />
             <div className="md:text-right">
-              {adapter.capabilities.cancelOffers && m?.status !== "resolved" ? (
-                <Btn variant="danger" disabled={busy} onClick={() => void run((r) => adapter.cancelOffer(o.id, r)).then((ok) => ok && showToast(adapter.id === "demo" ? "Demo offer cancelled" : "Offer cancelled"))}>Cancel</Btn>
+              {adapter.capabilities.cancelOffers && m && m.status !== "resolved" ? (
+                <Btn variant="danger" disabled={busy} onClick={() => void run((r) => adapter.cancelOffer(m, o, r)).then((ok) => ok && showToast(adapter.id === "demo" ? "Demo offer cancelled" : "Offer cancelled"))}>Cancel</Btn>
               ) : m?.status === "resolved" ? <span className="text-xs text-mute">Released when you redeem</span> : null}
               {tx.phase !== "idle" && <div className="mt-2 text-left"><TransactionStatus tx={tx} demo={adapter.id === "demo"} /></div>}
             </div>

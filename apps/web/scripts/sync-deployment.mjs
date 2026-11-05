@@ -57,6 +57,10 @@ if (args.has("--online")) {
 }
 
 if (!args.has("--check")) {
-  writeFileSync(resolve(here, "../.env"), toDotenv(env, "deployments/testnet-demo.json"));
-  console.log(`deployment: wrote apps/web/.env (market ${env.NEXT_PUBLIC_MARKET_CONTRACT_ID}, token ${env.NEXT_PUBLIC_TOKEN_CONTRACT_ID}, ${env.NEXT_PUBLIC_MARKET_ID})`);
+  // Markets are discovered through the backend now, so the contract IDs are no longer app configuration. The manifest is
+  // still validated above (and against the chain with --online); only network, RPC and the API origin are written.
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+  const out = { NEXT_PUBLIC_NETWORK: env.NEXT_PUBLIC_NETWORK, NEXT_PUBLIC_RPC_URL: env.NEXT_PUBLIC_RPC_URL, NEXT_PUBLIC_API_URL: apiUrl };
+  writeFileSync(resolve(here, "../.env"), toDotenv(out, "deployments/testnet-demo.json (validated); the API origin comes from NEXT_PUBLIC_API_URL"));
+  console.log(`deployment: manifest valid; wrote apps/web/.env (network ${out.NEXT_PUBLIC_NETWORK}, API ${apiUrl})`);
 } else console.log("deployment: manifest is valid");

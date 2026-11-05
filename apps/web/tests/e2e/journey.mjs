@@ -279,13 +279,13 @@ async function desktop() {
   if (shots) await page.screenshot({ path: `${shots}/portfolio-1440.png` });
 
   await page.getByRole("tab", { name: /Open offers/ }).click();
-  const committed = () => page.getByText("Committed to offers").locator("xpath=following-sibling::p[1]").innerText();
+  const committed = async () => /([\d.,]+) TEST in offers/.exec(await page.getByTestId("deposits-by-market").innerText())?.[1] ?? "";
   const committedBefore = await committed();
   await page.getByRole("button", { name: "Cancel" }).first().click();
   await page.waitForTimeout(1500);
   const committedAfter = await committed();
   check("cancelling a buy offer releases committed collateral", committedBefore !== committedAfter, `${committedBefore} -> ${committedAfter}`);
-  const availPortfolio = await page.getByText("Available collateral").locator("xpath=following-sibling::p[1]").innerText();
+  const availPortfolio = /([\d.,]+ TEST) available/.exec(await page.getByTestId("deposits-by-market").innerText())?.[1] ?? "";
   await page.goto(`${BASE}/funds`);
   await page.waitForSelector("text=In your wallet");
   check("Funds shows the same available balance as Portfolio", (await page.locator("main").innerText()).includes(availPortfolio), availPortfolio);

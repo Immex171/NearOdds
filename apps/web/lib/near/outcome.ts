@@ -41,6 +41,11 @@ export const isComplete = (o: unknown) => {
   return Boolean(x && x.status && (x.final_execution_status == null || x.final_execution_status === "FINAL" || FINAL.has(x.final_execution_status)) && x.receipts_outcome);
 };
 
+/** The network has not reported a final result yet. The transaction may still succeed: never resend, keep tracking the hash. */
+export class UnconfirmedError extends Error {
+  constructor(readonly hash: string) { super("The network has not reported the final result of this transaction yet. Do not resend it: it is still being tracked by its hash."); this.name = "UnconfirmedError"; }
+}
+
 /**
  * Resolves the executed outcome of a transaction from the chain itself (not from what the wallet reports).
  * Keeps asking until the network returns a FINAL outcome or `timeoutMs` passes; never resubmits anything.
@@ -50,7 +55,7 @@ export async function awaitFinalOutcome(hash: string, signerId: string, timeoutM
   for (;;) {
     const o = (await txStatus(hash, signerId)) as FinalOutcome | null;
     if (o && isComplete(o)) return o;
-    if (Date.now() > end) throw new Error("The network has not reported the final result of this transaction yet. Do not resend it; check the explorer, then refresh.");
+    if (Date.now() > end) throw new UnconfirmedError(hash);
     await sleep(1500);
   }
 }

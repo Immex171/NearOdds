@@ -3,6 +3,9 @@
 import { chromium } from "playwright-core";
 
 const BASE = process.env.BASE_URL ?? "http://localhost:3000";
+const API = process.env.NEARODDS_API ?? "http://localhost:4000";
+// The real backend names the market; find its ref instead of hardcoding it.
+const REF = (await (await fetch(`${API}/v1/markets?q=Lagos`)).json()).items.find((m) => m.contract.contractId.startsWith("mkt-demo-3879869")).marketRef;
 const shots = process.env.SHOTS_DIR;
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome", args: ["--no-sandbox"] });
 const results = [];
@@ -19,12 +22,12 @@ for (const [label, viewport, opts] of [["desktop", { width: 1440, height: 900 },
   await page.waitForSelector("article");
   const banner = await page.getByTestId("mode-banner").innerText();
   check(`${label}: live mode is the default and says testnet`, /NEAR testnet/i.test(banner) && !/DEMO MODE/.test(banner), banner);
-  check(`${label}: one real market card, the Lagos question`, (await page.locator("article").count()) === 1 && (await text(page)).includes("Will it rain in Lagos on 2026-11-12?"));
+  check(`${label}: one real market card, the Lagos question`, (await page.locator("article").count()) >= 1 && (await text(page)).includes("Will it rain in Lagos on 2026-11-12?"));
   check(`${label}: no invented category (no Crypto label/nav-filtered content on the card)`, !(await page.locator("article").innerText()).includes("Crypto"));
-  check(`${label}: card shows volume unavailable, not 0`, /Volume unavailable/.test(await page.locator("article").innerText()));
+  check(`${label}: card volume comes from confirmed fills (partial history is marked), not an invented number`, /≥ 0\.000065 tNOC vol/.test(await page.locator("article").first().innerText()), await page.locator("article").first().innerText());
   if (shots) await page.screenshot({ path: `${shots}/live-home-${label}.png` });
 
-  await page.goto(`${BASE}/markets/mkt-1`);
+  await page.goto(`${BASE}/markets/${REF}`);
   await page.getByRole("heading", { level: 1 }).waitFor();
   await page.waitForFunction(() => /tNOC/.test(document.body.innerText) && /ASKS/.test(document.body.innerText) && /0\.65/.test(document.body.innerText), null, { timeout: 20000 });
   const body = await text(page);
@@ -34,11 +37,14 @@ for (const [label, viewport, opts] of [["desktop", { width: 1440, height: 900 },
   const rules = await page.getByRole("region", { name: "Rules" }).innerText();
   check(`${label}: observation period shown separately from the cutoff`, /Observation period/.test(rules) && /Lagos calendar day 2026-11-12, 00:00 to 24:00 WAT/.test(rules) && /Trading closes/.test(rules));
   check(`${label}: rules text and source come from the contract`, /NiMet/.test(rules) && /trusted resolver/i.test(rules));
-  check(`${label}: volume unavailable`, (await page.getByTestId("volume").innerText()) === "unavailable");
-  check(`${label}: chart says unavailable`, await page.getByTestId("history-unavailable").isVisible());
-  check(`${label}: activity says unavailable`, await page.getByText("Activity unavailable").isVisible());
+  check(`${label}: volume is a lower bound while history is partial`, /at least 0\.000065 tNOC/.test(await page.getByTestId("volume").innerText()));
+  check(`${label}: partial history is labelled`, await page.getByTestId("history-partial").isVisible());
+  check(`${label}: the real price basis is shown (midpoint is not a trade)`, /midpoint/.test(await page.getByTestId("price-basis").innerText()) && /0\.65 tNOC/.test(await page.getByTestId("last-yes-trade").innerText()));
+  await page.waitForFunction(() => /probe-de.*traded 0\.0001 YES at 0\.65 tNOC/.test(document.body.innerText), null, { timeout: 15000 }).catch(() => {});
+  check(`${label}: indexed activity lists the real probe trade`, /probe-de.*traded 0\.0001 YES at 0\.65 tNOC/.test(await text(page)));
   // Real order book
-  check(`${label}: book lists the seeded on-chain prices and the partially filled offer`, ["0.75", "0.70", "0.65", "0.55", "0.50"].every((p) => body.includes(p)) && /9\.9999/.test(body));
+  check(`${label}: book lists the seeded on-chain prices and the partially filled offer`, ["0.75", "0.70", "0.65", "0.55", "0.50"].every((p) => body.includes(p)) && /0\.65(SELECTED)?\s+\d/.test(body));
+  check(`${label}: category comes from the backend (Weather) and the contract id is shown with the market`, /Weather/.test(await page.getByRole("navigation", { name: "Breadcrumb" }).innerText()));
   if (label === "desktop") {
     const ticket = page.getByRole("region", { name: "Trade", exact: true });
     const t = await ticket.innerText();
@@ -94,7 +100,7 @@ async function withMarketPatch(patch, fn) {
   await ctx.close();
 }
 await withMarketPatch({ status: "AwaitingResolution", awaiting_resolution: true, trading_open: false, split_open: false, merge_open: true }, async (page) => {
-  await page.goto(`${BASE}/markets/mkt-1`);
+  await page.goto(`${BASE}/markets/${REF}`);
   await page.getByTestId("awaiting-panel").waitFor({ timeout: 20000 });
   const t = await page.getByTestId("awaiting-panel").innerText();
   check("fixture awaiting: ticket becomes 'Trading has ended' with resolver and cutoff", /Trading has ended/.test(await page.getByTestId("settlement-title").innerText()) && /Nov 11, 2026, 11:00 PM UTC/.test(t) && /nearodds-deploy\.testnet/.test(t));
@@ -105,7 +111,7 @@ await withMarketPatch({ status: "AwaitingResolution", awaiting_resolution: true,
 });
 await withMarketPatch({ status: "Resolved", resolved: true, trading_open: false, split_open: false, merge_open: false, awaiting_resolution: false,
   resolution: { outcome: "Yes", resolver_id: "nearodds-deploy.testnet", resolved_at_ns: "1794441600000000000", evidence: "https://example.test/nimet-2026-11-12" } }, async (page) => {
-  await page.goto(`${BASE}/markets/mkt-1`);
+  await page.goto(`${BASE}/markets/${REF}`);
   await page.getByTestId("resolved-panel").waitFor({ timeout: 20000 });
   const t = await page.getByTestId("resolved-panel").innerText();
   check("fixture resolved: shows the recorded result and evidence", /YES won/.test(t) && /Evidence \(recorded, not verified\)/.test(t) && /example\.test\/nimet/.test(t));

@@ -18,6 +18,7 @@ export function TransactionStatus({ tx, demo }: { tx: TxState; demo: boolean }) 
       <p className={`mt-2 font-medium ${failed ? "text-no" : ""}`}>
         {failed ? `Failed: ${tx.message ?? "The transaction was rejected."}` : unconfirmed ? `Not confirmed: ${tx.message ?? ""}` : tx.message}
       </p>
+      {unconfirmed && !demo && <p className="mt-1 text-xs text-mute" data-testid="unconfirmed-note">Tracked by its transaction hash. It is never sent again automatically; this page re-reads its status until the network reports a final result.</p>}
       {tx.hash && !demo && <a className="mt-1 inline-block text-xs text-brand underline" href={explorerTx(tx.hash)} target="_blank" rel="noreferrer">View on explorer</a>}
       {tx.hash && demo && <p className="mt-1 text-xs text-mute">Simulated reference {tx.hash}</p>}
     </div>

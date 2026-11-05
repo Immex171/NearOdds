@@ -1,11 +1,46 @@
-export const CATEGORIES = ["Crypto", "Sports", "Politics", "Economy", "Technology"] as const;
-export type Category = (typeof CATEGORIES)[number];
+/** Categories of the built-in demo data. Live categories come from the backend (/v1/categories) and are open-ended. */
+export const DEMO_CATEGORIES = ["Crypto", "Sports", "Politics", "Economy", "Technology"] as const;
+export type Category = string;
 export type MarketStatus = "open" | "closed" | "awaiting" | "resolved";
 export type Outcome = "YES" | "NO";
 export type Side = "buy" | "sell";
 
+/** Where a price came from. A midpoint is NOT a trade and must never be labelled "last trade". */
+export type PriceBasis = "midpoint" | "last_trade" | "none";
+export interface OutcomeQuote { bestBid: bigint | null; bestAsk: bigint | null; lastTrade: bigint | null; displayed: bigint | null; basis: PriceBasis }
+
+/** The contract identity behind a market. Wallet calls go to `contractId`; `marketId` is only the `market_id` argument. */
+export interface ContractRef { contractId: string; marketId: string; tokenId: string }
+
+/** How complete the indexed data is. Partial history must be labelled partial. */
+export interface Coverage { historyComplete: boolean; note: string; reconcileOk: boolean | null; driftCount: number }
+
 export interface Market {
+  /** The frontend identity: the backend `marketRef` in live mode (route, caches, watchlist). NOT the contract's market_id. */
   id: string;
+  /** Live only. Absent for demo markets. */
+  contract?: ContractRef;
+  /** Collateral token as verified metadata (live) or the demo token. */
+  token: { symbol: string; decimals: number; isTest: boolean };
+  /** Trading limits of THIS market's contract (get_config().trading, mirrored by the API). */
+  limits: Limits;
+  /** Per-outcome quotes (live). Null when the source has none (demo). */
+  quotes: { YES: OutcomeQuote; NO: OutcomeQuote } | null;
+  coverage?: Coverage;
+  /** Live: what the chain must confirm before wallet actions unlock (question, cutoff, trading parameters). */
+  chainClaim?: { question: string; cutoffNs: string; trading: import("@nearodds/types").TradingParams };
+  /** Live: "fresh" = status and action flags were just read from the contract; "unavailable" = the RPC read failed, so only indexed data is shown. */
+  chain?: "fresh" | "unavailable";
+  /** Live: true when `volume` may undercount because history is partial. */
+  volumePartial?: boolean;
+  tradeCount?: number;
+  openOfferCount?: number;
+  /** Observation window in unix ms (live), separate from the trading cutoff. */
+  observationWindow?: { startMs: number; endMs: number } | null;
+  /** Live: how the result is produced (reviewed evidence for the Lagos market). */
+  resolutionProcess?: { policy: string; cutoffPassed: boolean; observationComplete: boolean; evidence: string; note: string | null };
+  trustSummary?: string;
+  source?: "imported-demo" | "keeper";
   question: string;
   /** null = the source has no category (live markets never invent one). */
   category: Category | null;
@@ -23,8 +58,10 @@ export interface Market {
   volume: bigint | null;
   /** Live only: the contract's own action flags (get_market). Absent in demo. */
   flags?: { splitOpen: boolean; mergeOpen: boolean; tradingOpen: boolean };
-  /** Display probability: last YES trade price in base units (1_000_000 = 1.0). null = no trades. */
+  /** Displayed YES probability in base units (1_000_000 = 1.0); see `yesBasis` for what it is. null = no price. */
   lastYes: bigint | null;
+  /** Basis of `lastYes` (live). Absent in demo, where it is the last trade. */
+  yesBasis?: PriceBasis;
   /** Price 24h ago, for movement. */
   prevYes: bigint | null;
   hasHistory: boolean;
@@ -46,7 +83,11 @@ export interface Market {
 }
 
 export interface Offer {
+  /** Frontend identity: `offerRef` (`<marketRef>:<offerId>`) live. Different contracts reuse local offer ids. */
   id: string;
+  /** The contract-local offer id: the only value ever sent to a contract. */
+  offerId: string;
+  /** marketRef of the market this offer belongs to. */
   marketId: string;
   outcome: Outcome;
   /** buy = bid, sell = ask */
@@ -75,6 +116,7 @@ export interface ActivityItem {
 }
 
 export interface Position {
+  /** marketRef */
   marketId: string;
   outcome: Outcome;
   qty: bigint;
@@ -84,28 +126,45 @@ export interface Position {
   reserved: bigint;
 }
 
-export interface AccountState {
-  accountId: string;
-  isDemo: boolean;
-  walletBalance: bigint;
+/** A wallet's balance of ONE token contract, counted once however many markets use that token. null = unavailable. */
+export interface WalletBalance { tokenId: string; symbol: string; balance: bigint | null; tokenRegistered: boolean | null }
+
+/** Collateral deposited into ONE market contract. Deposits are per contract and never pooled across markets. */
+export interface Holding {
+  /** marketRef; "*" = a single pooled balance (demo only). */
+  marketRef: string;
+  symbol: string;
+  /** Registered with the market contract; null = not applicable (demo). */
+  registered: boolean | null;
   available: bigint;
   committed: bigint;
   pendingWithdrawal: bigint;
+  /** Latest withdrawal record of this market. */
+  withdrawal?: { id: string; amount: bigint; status: WithdrawalStatus } | null;
+  /** Native NEAR (yoctoNEAR) needed to register with this market. Never collateral. */
+  storageCostYocto?: bigint;
+  maxOpenOffers: number;
+  /** Set when the indexer and the chain disagreed about this account. */
+  driftNote?: string | null;
+}
+
+/** "Unsettled" = a record from before the indexer started; its outcome is not known to the API. */
+export type WithdrawalStatus = "Pending" | "Completed" | "FailedRestored" | "Unsettled";
+export interface WithdrawalItem { ref: string; marketRef: string; id: string; amount: bigint; status: WithdrawalStatus; requestedAt: number; settledAt: number | null }
+
+export interface AccountState {
+  accountId: string;
+  isDemo: boolean;
+  wallets: WalletBalance[];
+  /** Native NEAR in yoctoNEAR (fees, storage). null = unavailable. */
+  nearBalance?: bigint | null;
+  holdings: Holding[];
   positions: Position[];
   offers: OpenOffer[];
   activity: ActivityItem[];
-  /** live only */
-  registered?: boolean;
-  /** Native NEAR (yoctoNEAR) needed to register with the market. Never collateral. */
-  storageCostYocto?: bigint;
-  maxOpenOffers: number;
-  withdrawalStatus?: "Pending" | "Completed" | "FailedRestored" | null;
-  /** Live only: the latest withdrawal record (pending or last settled). */
-  withdrawal?: { id: string; amount: bigint; status: "Pending" | "Completed" | "FailedRestored" } | null;
-  /** Live only: registered with the collateral token (NEP-145). */
-  tokenRegistered?: boolean;
-  /** Live only: native NEAR balance in yoctoNEAR (fees, storage). */
-  nearBalance?: bigint;
+  withdrawals: WithdrawalItem[];
+  /** Data-quality notices to show with the numbers. */
+  notes?: string[];
 }
 
 /** Trading limits. Live values come from get_config(); demo uses the documented defaults. All base units. */
@@ -153,6 +212,7 @@ export interface TxState { phase: TxPhase; message?: string; hash?: string }
 export type TxReporter = (s: TxState) => void;
 
 export interface CreateOfferRequest {
+  /** marketRef (the market contract and its market_id are taken from the Market, never from this). */
   marketId: string;
   outcome: Outcome;
   side: Side;
@@ -174,35 +234,53 @@ export interface Quote {
   avgPrice: bigint | null;
 }
 
+export interface Freshness { blockHeight: number | null; lagBlocks: number | null; generatedAt: string }
+export interface CategoryCount { category: string; count: number }
+
+/**
+ * Reads take a marketRef; every transaction takes the whole Market so the target contract, market_id and token are
+ * unambiguous. Nothing here reads a global "current market".
+ */
 export interface DataAdapter {
   id: "demo" | "near";
   label: string;
+  /** Fallback label only (no market in scope). Prefer `market.token.symbol`. */
   symbol: string;
   capabilities: Capabilities;
   subscribe(cb: () => void): () => void;
+  /** Freshness of the most recent backend answer (live); null in demo or before the first answer. */
+  freshness(): Freshness | null;
   listMarkets(): Promise<Market[]>;
-  getMarket(id: string): Promise<Market | null>;
-  getBook(id: string): Promise<Offer[]>;
-  getHistory(id: string): Promise<HistoryPoint[] | null>;
-  getActivity(id: string): Promise<ActivityItem[]>;
-  getAccount(accountId: string): Promise<AccountState | null>;
-  deposit(amount: bigint, r: TxReporter): Promise<void>;
-  withdraw(amount: bigint, r: TxReporter): Promise<void>;
-  split(marketId: string, amount: bigint, r: TxReporter): Promise<void>;
-  merge(marketId: string, amount: bigint, r: TxReporter): Promise<void>;
+  listCategories(): Promise<CategoryCount[]>;
+  searchMarkets(q: string): Promise<Market[]>;
+  getMarket(ref: string): Promise<Market | null>;
+  getBook(ref: string): Promise<Offer[]>;
+  getHistory(ref: string): Promise<HistoryPoint[] | null>;
+  /** 24h YES movement. null unless complete history proves it; never estimated. */
+  getMovement(m: Market, now: number): Promise<{ delta: number; label: string } | null>;
+  getActivity(ref: string): Promise<ActivityItem[]>;
+  /** Without a market: the whole portfolio. With one: that market's contract state, read from the chain. */
+  getAccount(accountId: string, market?: Market): Promise<AccountState | null>;
+  /** Verifies the market's contract, token and config before wallet actions are enabled. Demo: always ok. */
+  deployment(m: Market): Deployment;
+  verify(m: Market, force?: boolean): Promise<void>;
+  deposit(m: Market, amount: bigint, r: TxReporter): Promise<void>;
+  withdraw(m: Market, amount: bigint, r: TxReporter): Promise<void>;
+  split(m: Market, amount: bigint, r: TxReporter): Promise<void>;
+  merge(m: Market, amount: bigint, r: TxReporter): Promise<void>;
   /** Rests a fully funded offer (contract `create_offer`). */
-  createOffer(req: CreateOfferRequest, r: TxReporter): Promise<void>;
-  /** Takes `qty` (partial allowed) from one specific offer (contract `fill_offer`). */
-  fillOffer(offerId: string, qty: bigint, r: TxReporter): Promise<void>;
-  cancelOffer(offerId: string, r: TxReporter): Promise<void>;
-  redeem(marketId: string, r: TxReporter): Promise<void>;
-  /** Trading limits in force for this adapter. */
-  limits: Limits;
+  createOffer(m: Market, req: CreateOfferRequest, r: TxReporter): Promise<void>;
+  /** Takes `qty` (partial allowed) from one specific offer (contract `fill_offer`). Re-reads the offer first. */
+  fillOffer(m: Market, offer: Offer, qty: bigint, r: TxReporter): Promise<void>;
+  cancelOffer(m: Market, offer: Offer, r: TxReporter): Promise<void>;
+  redeem(m: Market, r: TxReporter): Promise<void>;
   /** Preview of `redeem` for the connected account (null when not applicable). */
-  redeemPreview(marketId: string, accountId: string): Promise<RedeemPreview | null>;
+  redeemPreview(m: Market, accountId: string): Promise<RedeemPreview | null>;
   reset?(): void;
-  /** Live only: register with the collateral token (NEP-145). */
-  registerToken?(r: TxReporter): Promise<void>;
+  /** Live only: register with the market's collateral token (NEP-145). */
+  registerToken?(m: Market, r: TxReporter): Promise<void>;
   /** Live only: register with the market contract. */
-  registerMarket?(r: TxReporter): Promise<void>;
+  registerMarket?(m: Market, r: TxReporter): Promise<void>;
+  /** Live only, after verification: native NEAR storage costs and the account that can mint this market's token. */
+  costs?(m: Market): { tokenStorage: bigint; marketStorage: bigint; tokenOwnerHint: string } | null;
 }

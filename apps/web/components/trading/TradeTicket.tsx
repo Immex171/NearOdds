@@ -2,7 +2,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ONE, formatUnits, tryParseUnits } from "@/lib/amounts";
-import { useApp } from "@/lib/app-context";
+import { holdingOf, positionsOf, walletOf } from "@/lib/account";
+import { useApp, useDeployment, useMarketAccount } from "@/lib/app-context";
 import { useTx } from "@/lib/hooks";
 import { marketLabel, money, priceStr } from "@/lib/format";
 import { exactCost, parsePrice, parseQuantity, resolveOffer, takeCandidates, type TicketValue } from "@/lib/trading";
@@ -24,10 +25,14 @@ export function TradeTicket(props: { m: Market; book: Offer[]; value: TicketValu
 }
 
 function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; value: TicketValue; onChange: (p: Partial<TicketValue>) => void }) {
-  const { adapter, account, accountId, accountStatus, session, setConnectOpen, showToast, wrongNetwork, refresh, now, deployment } = useApp();
+  const { adapter, accountId, session, setConnectOpen, showToast, wrongNetwork, refresh, now } = useApp();
+  // Everything below is scoped to THIS market's contract: its limits, token, deposit bucket and verification.
+  const { account, error: accountErr } = useMarketAccount(m);
+  const { deployment, retry } = useDeployment(m);
+  const accountStatus = !accountId ? "none" : accountErr && !account ? "error" : account ? "ready" : "loading";
   const router = useRouter();
   const { side, outcome, mode } = value;
-  const L = adapter.limits;
+  const L = m.limits;
   const floorLot = (v: bigint) => (v / L.lot) * L.lot;
   const [qtyS, setQtyS] = useState("");
   const [amountS, setAmountS] = useState("");
@@ -36,15 +41,17 @@ function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; va
   const [changing, setChanging] = useState(false);
   const { tx, run, reset, busy } = useTx();
   const demo = adapter.id === "demo";
-  const sym = adapter.symbol;
+  const sym = m.token.symbol;
   const caps = adapter.capabilities;
   const edit = () => { if (tx.phase !== "idle") reset(); };
   const change = (p: Partial<TicketValue>) => { onChange(p); edit(); };
 
   const connected = session.kind !== "none";
-  const held = account?.positions.find((p) => p.marketId === m.id && p.outcome === outcome)?.qty ?? 0n; // available, unreserved
-  const avail = account?.available ?? 0n;
-  const maxOffers = account?.maxOpenOffers ?? L.maxOpenOffers;
+  const holding = holdingOf(account, m);
+  const wallet = walletOf(account, m);
+  const held = positionsOf(account, m).find((p) => p.outcome === outcome)?.qty ?? 0n; // available, unreserved
+  const avail = holding?.available ?? 0n;
+  const maxOffers = holding?.maxOpenOffers ?? L.maxOpenOffers;
   const { offer, gone, candidates } = resolveOffer(book, value, accountId);
 
   // Executable quotes per outcome and side, each from its own book. Never derived from one another.
@@ -62,12 +69,12 @@ function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; va
   const crossing = mode === "limit" && pr.ok && candidates.length > 0 && (side === "buy" ? pr.value >= candidates[0].price : pr.value <= candidates[0].price);
 
   const live = adapter.id === "near";
-  const needsSetup = live && !!account && (account.registered === false || account.tokenRegistered === false);
+  const needsSetup = live && !!account && (holding?.registered === false || wallet?.tokenRegistered === false);
   let block: string | null = null;
   if (m.status !== "open") block = "Market closed";
+  else if (!connected) block = null; // a disconnected visitor is simply asked to connect; verification matters once there is a wallet
   else if (live && deployment.state === "error") block = "Trading unavailable";
   else if (live && deployment.state !== "ok") block = "Verifying deployment…";
-  else if (!connected) block = null;
   else if (wrongNetwork) block = "Wrong network";
   else if (!caps.trading) block = "Trading unavailable";
   else if (accountStatus === "loading") block = "Loading balance…";
@@ -96,8 +103,8 @@ function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; va
     const consumes = mode === "take" && fresh ? qty >= fresh.qty : false;
     const expiresAt = mode === "limit" && expiry !== "none" ? now + EXPIRY.find((e) => e[0] === expiry)![2] : undefined;
     const ok = await run((r) => (mode === "limit"
-      ? adapter.createOffer({ marketId: m.id, outcome, side, price: pr.ok ? pr.value : 0n, qty, expiresAt }, r)
-      : adapter.fillOffer(fresh!.id, qty, r)));
+      ? adapter.createOffer(m, { marketId: m.id, outcome, side, price: pr.ok ? pr.value : 0n, qty, expiresAt }, r)
+      : adapter.fillOffer(m, fresh!, qty, r)));
     if (ok) {
       setQtyS(""); setAmountS("");
       if (consumes) onChange({ offerId: null });
@@ -208,7 +215,10 @@ function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; va
                 <input id="amount" inputMode="decimal" value={amountS} placeholder="0" aria-label={`Amount in ${sym}`} aria-invalid={!!amountS && !amount.ok} onChange={(e) => { setAmountS(e.target.value); edit(); }} className={bigInput} />
                 <span className={`self-end pb-1 text-sm ${C.mute}`}>{sym}</span>
               </label>
-              <div className="mt-1 flex justify-end gap-1">{[1, 5, 10, 100].map((n) => <button key={n} type="button" onClick={() => addBudget(n)} className={chip}>+{n}</button>)}</div>
+              <div className="mt-1 flex justify-end gap-1">
+                {[1, 5, 10, 100].map((n) => <button key={n} type="button" onClick={() => addBudget(n)} className={chip}>+{n}</button>)}
+                <button type="button" onClick={() => { const cap = offer ? (offer.qty * offer.price) / ONE : avail; setAmountS(formatUnits(avail < cap ? avail : cap)); edit(); }} className={chip}>Max</button>
+              </div>
               {amountS && !amount.ok && <p className="mt-1 text-right text-xs text-no" role="alert">{amount.error}</p>}
             </div>
           ) : (
@@ -220,7 +230,10 @@ function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; va
               </label>
               <div className="mt-1 flex justify-end gap-1">
                 {side === "buy"
-                  ? [-100, -10, 10, 100].map((n) => <button key={n} type="button" onClick={() => addShares(n)} className={chip}>{n > 0 ? `+${n}` : `−${-n}`}</button>)
+                  ? <>
+                      {[-100, -10, 10, 100].map((n) => <button key={n} type="button" onClick={() => addShares(n)} className={chip}>{n > 0 ? `+${n}` : `−${-n}`}</button>)}
+                      <button type="button" onClick={() => { const p = pr.ok ? pr.value : null; if (p) { setQtyS(formatUnits(floorLot((avail * ONE) / p))); edit(); } }} disabled={!pr.ok} className={chip}>Max</button>
+                    </>
                   : [25, 50, 75, 100].map((n) => <button key={n} type="button" onClick={() => pct(n)} className={chip}>{n === 100 ? "Max" : `${n}%`}</button>)}
               </div>
               {qtyS && !q.ok && <p className="mt-1 text-right text-xs text-no" role="alert">{q.error}</p>}
@@ -301,7 +314,9 @@ function OpenTicket({ m, book, value, onChange }: { m: Market; book: Offer[]; va
             </div>
           )}
 
-          {needsSetup && <p role="status" className="rounded-lg bg-[#15181E] px-3 py-2 text-xs text-[#969DA8]" data-testid="setup-needed">Before trading you must register {account?.registered === false ? "with the market" : ""}{account?.registered === false && account?.tokenRegistered === false ? " and " : ""}{account?.tokenRegistered === false ? `with the ${sym} token` : ""}, then deposit collateral. Both steps are on the Funds page.</p>}
+          {needsSetup && <p role="status" className="rounded-lg bg-[#15181E] px-3 py-2 text-xs text-[#969DA8]" data-testid="setup-needed">Before trading in this market you must register {holding?.registered === false ? "with its contract" : ""}{holding?.registered === false && wallet?.tokenRegistered === false ? " and " : ""}{wallet?.tokenRegistered === false ? `with the ${sym} token` : ""}, then deposit collateral into it. These steps are on the Funds page.</p>}
+          {live && deployment.state === "error" && <p role="alert" className="rounded-lg bg-no-bg/50 px-3 py-2 text-xs text-no" data-testid="deployment-error">This market failed verification, so wallet actions are off: {deployment.problems.join(" ")} <button type="button" className="font-semibold underline" onClick={retry}>Check again</button></p>}
+          {live && m.chain === "unavailable" && <p className={`text-xs ${C.mute}`} data-testid="chain-unavailable">The contract could not be read just now, so the status shown comes from the indexer. Wallet actions re-check the contract before signing.</p>}
           {wrongNetwork && <p role="alert" className="rounded-lg bg-no-bg/50 px-3 py-2 text-xs text-no">This wallet looks like a mainnet account but the app is set to testnet. Switch your wallet to testnet.</p>}
           <TransactionStatus tx={tx} demo={demo} />
           <button type="button" disabled={primary.disabled} onClick={primary.onClick}

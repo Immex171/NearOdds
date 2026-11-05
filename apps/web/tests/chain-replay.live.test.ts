@@ -4,9 +4,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.stubEnv("NEXT_PUBLIC_RPC_URL", "https://test.rpc.fastnear.com");
-vi.stubEnv("NEXT_PUBLIC_MARKET_CONTRACT_ID", "mkt-demo-3879869.nearodds-deploy.testnet");
-vi.stubEnv("NEXT_PUBLIC_TOKEN_CONTRACT_ID", "tok-demo-3879869.nearodds-deploy.testnet");
-vi.stubEnv("NEXT_PUBLIC_MARKET_ID", "mkt-1");
 
 const live = process.env.NEARODDS_LIVE === "1";
 const SUFFIX = ".nearodds-deploy.testnet";
@@ -31,32 +28,38 @@ describe.skipIf(!live)("real testnet transactions", () => {
     const o = await awaitFinalOutcome("4FanRtXB7e8JJN6v1LSm6GT6uvgaFVARaTennr4zs8BM", `lp-demo-3879869${SUFFIX}`, 30_000);
     expect(successValue<{ offer_id: string }>(o)?.offer_id).toBe("4");
   }, 40_000);
-  it("the live adapter verifies the deployment, adopts tNOC/6 decimals, and reads the full seeded book", async () => {
+  it("the live adapter discovers the market through the backend, verifies its contract on chain, and reads the seeded book", async () => {
     const { NearAdapter } = await import("@/lib/near/adapter");
-    const a = new NearAdapter();
-    await a.init(true);
-    expect(a.deployment).toEqual({ state: "ok" });
-    expect(a.symbol).toBe("tNOC");
-    expect(a.limits).toMatchObject({ tick: 10_000n, lot: 100n, minOrder: 10_000n, maxOpenOffers: 10 });
-    const book = await a.getBook();
-    const ids = new Set(book.map((o) => o.id));
-    for (const id of ["4", "8", "12", "18", "22", "25", "29"]) expect(ids.has(id)).toBe(true);
-    const o4 = book.find((o) => o.id === "4")!;
-    expect(o4.qty).toBe(9_999_900n); // 10 shares minus the 0.0001 probe fill
-    const m = await a.getMarket();
-    expect(m?.status).toBe("open");
-    expect(m?.category).toBeNull();
+    const { createApi } = await import("@/lib/api/client");
+    const a = new NearAdapter(createApi({ baseUrl: process.env.NEARODDS_API ?? "http://localhost:4000" }));
+    const list = await a.listMarkets();
+    const lagos = list.find((m) => m.contract?.contractId === `mkt-demo-3879869${SUFFIX}`)!;
+    expect(lagos).toBeDefined();
+    expect(lagos.contract).toEqual({ contractId: `mkt-demo-3879869${SUFFIX}`, marketId: "mkt-1", tokenId: `tok-demo-3879869${SUFFIX}` });
+    expect(lagos.category).toBe("Weather");
+    await a.verify(lagos, true);
+    expect(a.deployment(lagos)).toEqual({ state: "ok" });
+    expect(lagos.token.symbol).toBe("tNOC");
+    const book = await a.getBook(lagos.id);
+    const local = new Set(book.map((o) => o.offerId));
+    for (const id of ["4", "8", "12", "18", "22", "25", "29"]) expect(local.has(id)).toBe(true);
+    expect(book.find((o) => o.offerId === "4")!.id).toBe(`${lagos.id}:4`);
+    const m = await a.getMarket(lagos.id);
+    expect(m).toMatchObject({ status: "open", chain: "fresh" });
     expect(new Date(m!.closesAt).toISOString()).toBe("2026-11-11T23:00:00.000Z");
   }, 60_000);
-  it("reads a real account: LP is registered with both contracts, holds offers, and has no native-NEAR shortfall flagged as unregistered", async () => {
+  it("reads real accounts from the chain for the selected market", async () => {
     const { NearAdapter } = await import("@/lib/near/adapter");
-    const a = new NearAdapter();
-    await a.init(true);
-    const acct = await a.getAccount(`lp-demo-3879869${SUFFIX}`);
-    expect(acct?.registered).toBe(true);
-    expect(acct?.tokenRegistered).toBe(true);
+    const { createApi } = await import("@/lib/api/client");
+    const a = new NearAdapter(createApi({ baseUrl: process.env.NEARODDS_API ?? "http://localhost:4000" }));
+    const lagos = (await a.listMarkets()).find((m) => m.contract?.contractId === `mkt-demo-3879869${SUFFIX}`)!;
+    const acct = await a.getAccount(`lp-demo-3879869${SUFFIX}`, lagos);
+    expect(acct?.holdings[0].registered).toBe(true);
+    expect(acct?.wallets[0].tokenRegistered).toBe(true);
     expect(acct?.offers.length).toBeGreaterThanOrEqual(7);
-    const nobody = await a.getAccount("nobody-registered.testnet");
-    expect(nobody).toMatchObject({ registered: false, tokenRegistered: false, nearBalance: 0n });
+    const nobody = await a.getAccount("nobody-registered.testnet", lagos);
+    expect(nobody?.holdings[0].registered).toBe(false);
+    expect(nobody?.wallets[0].tokenRegistered).toBe(false);
+    expect(nobody?.nearBalance).toBe(0n);
   }, 60_000);
 });

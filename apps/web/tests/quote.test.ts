@@ -3,7 +3,7 @@ import { quoteTake } from "@/lib/quote";
 import type { Offer } from "@/lib/types";
 
 const o = (id: string, side: "buy" | "sell", price: number, qty: number, owner = "m"): Offer => ({
-  id, marketId: "x", outcome: "YES", side, price: BigInt(price * 1e6), qty: BigInt(qty * 1e6), owner, createdAt: 0,
+  id, offerId: id, marketId: "x", outcome: "YES", side, price: BigInt(price * 1e6), qty: BigInt(qty * 1e6), owner, createdAt: 0,
 });
 
 describe("quoteTake", () => {

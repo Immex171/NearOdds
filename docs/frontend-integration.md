@@ -1,19 +1,27 @@
-# Frontend integration status (apps/web, testnet demo market)
+# Frontend integration status (apps/web)
 
-Scope: `apps/web` against the deployed persistent demo market (`deployments/testnet-demo.json`, verified deployment `462871b`).
+The frontend is multi-market: discovery and history come from the backend API, and every wallet action targets the selected
+market's own contract after the chain has been re-read. Details: `apps/web/README.md`.
 
-## What is wired to the chain
-- Config derived and validated from the manifest (`apps/web/scripts/sync-deployment.mjs`); on-chain agreement check at runtime (`get_config`, `get_market`, `ft_metadata`); transactions disabled on any mismatch.
-- Token symbol/decimals from `ft_metadata` (`tNOC`, 6); tick, lot, min order, price bounds, max offers and storage costs from `get_config`.
-- Registration on both contracts (token 0.00125 NEAR from `storage_balance_bounds`; market `storage_cost_per_account` = 0.04096 NEAR), deposit (`ft_transfer_call`, 300 Tgas, 1 yocto), market calls (100 Tgas, 1 yocto), withdraw with Pending shown as unconfirmed and never resent.
-- Screens by `get_market().status`; redemption preview before `redeem`; Redeem vs Withdraw explained.
-- Placeholder data removed: no category, creation date, volume, chart or activity for the live market; each is labelled unavailable. Trading cutoff (2026-11-11T23:00:00Z = 2026-11-12 00:00 WAT) shown separately from the observation period (parsed from the market's own rules text).
+## Identities (use these consistently)
+`marketRef` = frontend identity (route, cache, watchlist). `contract.contractId` = wallet-call receiver. `contract.marketId` = the contract's
+`market_id` argument (contracts can share `mkt-1`). `contract.tokenId` = collateral token. `offerRef`/`withdrawalRef` = frontend identities;
+`offerId`/`withdrawalId` = contract-local ids sent to contracts.
 
-## Funding (accurate description)
-No public faucet exists. Only the token owner (`nearodds-deploy.testnet`) can mint tNOC, by hand, with `scripts/testnet-mint.sh` (registers the wallet with the token first if needed). The Funds page shows the exact command for the connected account. Native testnet NEAR (fees, two storage deposits) comes from elsewhere; the app only reports the balance.
+## Behaviour worth knowing
+- Per market: verification (contract, token, config, identity, and agreement with the API's claim), registration, deposits, limits, offers, balances, redemption preview.
+- Wallet token balance is per token and counted once; deposits are shown per market and never pooled.
+- Preflight before every wallet call: `get_market` flags, `get_account`, `get_offer`, `get_redemption_preview`. A vanished/changed offer is explained and the wallet is not opened.
+- A submitted transaction whose result cannot be read is "unconfirmed", stored by hash (localStorage) and only re-read, never resent. Withdrawal `Pending` is unconfirmed; a second withdrawal is refused meanwhile.
+- Sign-in is NEP-413 (challenge -> wallet signs message, recipient, decoded nonce -> verify). The application session is tab-scoped and ends when the wallet account changes.
+- Faucet: one idempotency key per intended claim (kept across reloads and retries); queued is not funded; native NEAR is separate.
+- Stream: one connection per account for all markets; events are hints, REST is the truth.
+
+## Backend observations (for the backend team)
+- Real demo market reports `reconcile.ok=false, driftCount=5` and `tipHeight/lagBlocks=null` (lag unknown); the UI shows the drift notice and treats unknown lag as unknown.
+- `driftNote` in `/portfolio` is an array of strings (typed as such locally).
+- Response types missing from `packages/types/src/backend-api.ts` and defined locally in `apps/web/lib/api/types.ts`: market detail, trades, candles, activity, portfolio, account offers/withdrawals (incl. status `Unsettled`), auth, watchlist, faucet, categories, stream events. Please move them into the shared package so both sides share one definition.
+- `market_created` events carry the new `marketRef`; clients that filter the stream by `markets=` would miss them, so the app subscribes to all markets.
 
 ## Verification evidence
-See the final report in the task hand-off; commands: `pnpm check`, `pnpm deployment:check`, `NEARODDS_LIVE=1 pnpm vitest run tests/chain-replay.live.test.ts`, `pnpm e2e` (demo build), `node tests/e2e/live.mjs` (live build).
-
-## Remaining blocker
-A real funded-wallet transaction run (and transaction hashes for new live actions) requires a signer for a registered and funded testnet account, which was not available to this session.
+See the hand-off report: unit tests, Sandbox run (real contracts, transaction hashes in the report), browser integration (simulation), real-backend read-only run.

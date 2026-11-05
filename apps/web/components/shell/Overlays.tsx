@@ -16,8 +16,8 @@ export function Overlays() {
           <button disabled={!liveConfigured} onClick={() => void connectWallet()} className="w-full rounded-xl border border-line p-4 text-left hover:border-brand disabled:cursor-not-allowed disabled:opacity-60">
             <p className="font-semibold">Connect NEAR wallet (testnet)</p>
             <p className="mt-1 text-mute">
-              {liveConfigured ? "The deployed testnet market. You need a little testnet NEAR for fees and tNOC test collateral (no monetary value). Every transaction is approved in your wallet."
-                : "Not configured. Run `pnpm deployment:sync` to derive the contract IDs from deployments/testnet-demo.json (see .env.example)."}
+              {liveConfigured ? "Live testnet markets from the NearOdds backend. You need a little testnet NEAR for fees and storage, plus tNOC test collateral (no monetary value; the faucet on the Funds page can send it). Every transaction is approved in your wallet."
+                : "Not configured. Set NEXT_PUBLIC_API_URL to the NearOdds backend (see .env.example)."}
             </p>
           </button>
         </div>
@@ -28,7 +28,7 @@ export function Overlays() {
           <p><b className="text-fg">Complete sets.</b> 1 collateral token can always be split into 1 YES + 1 NO share, and 1 YES + 1 NO can be merged back into 1 token. This is what keeps every share fully backed.</p>
           <p><b className="text-fg">Offers.</b> You trade by taking an existing offer or placing your own limit offer that waits for a counterparty. Each outcome has its own order book.</p>
           <p><b className="text-fg">Settlement.</b> After trading closes, a named resolver publishes the outcome using the source in the market’s rules. Winning shares redeem for 1 token each; losing shares are worth 0.</p>
-          <p className="rounded-lg bg-elev p-3 text-xs">Currently running on <b className="text-fg">{adapter.id === "demo" ? "demo data" : "the NEAR testnet contract"}</b>. {adapter.id === "demo" ? "All prices, offers and balances are simulated." : "Prices come from real offers on the contract. Price history, volume and activity are unavailable until an indexer exists."} Test tokens have no monetary value.</p>
+          <p className="rounded-lg bg-elev p-3 text-xs">Currently running on <b className="text-fg">{adapter.id === "demo" ? "demo data" : "the NEAR testnet contract"}</b>. {adapter.id === "demo" ? "All prices, offers and balances are simulated." : "Markets, order books and history come from the NearOdds indexer; balances and every transaction are checked against each market’s own contract. History can be partial and is labelled when it is."} Test tokens have no monetary value.</p>
         </div>
         <Btn className="mt-4 w-full" onClick={() => setHelpOpen(false)}>Got it</Btn>
       </Modal>

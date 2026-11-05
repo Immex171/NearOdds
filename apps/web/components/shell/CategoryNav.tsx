@@ -2,17 +2,22 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 
-const ITEMS: { label: string; href: string; match: (p: URLSearchParams, path: string) => boolean }[] = [
-  { label: "Trending", href: "/", match: (p, path) => path === "/" },
-  { label: "New", href: "/markets?view=new", match: (p, path) => path === "/markets" && p.get("view") === "new" },
-  ...["Crypto", "Sports", "Politics", "Economy", "Technology"].map((c) => ({
-    label: c, href: `/markets?category=${c}`, match: (p: URLSearchParams, path: string) => path === "/markets" && p.get("category") === c,
-  })),
-];
+import { useApp } from "@/lib/app-context";
+
+type Item = { label: string; href: string; match: (p: URLSearchParams, path: string) => boolean };
 
 export function CategoryNav() {
   const path = usePathname();
   const sp = useSearchParams();
+  const { categories } = useApp();
+  // Categories come from the backend (/v1/categories), so a new one such as "Weather" appears without a redeploy.
+  const ITEMS: Item[] = [
+    { label: "Trending", href: "/", match: (p, pth) => pth === "/" },
+    { label: "New", href: "/markets?view=new", match: (p, pth) => pth === "/markets" && p.get("view") === "new" },
+    ...categories.map((c) => ({
+      label: c.category, href: `/markets?category=${encodeURIComponent(c.category)}`, match: (p: URLSearchParams, pth: string) => pth === "/markets" && p.get("category")?.toLowerCase() === c.category.toLowerCase(),
+    })),
+  ];
   return (
     <nav aria-label="Categories" className="border-t border-line/60">
       <ul className="no-scrollbar mx-auto flex h-11 max-w-[1320px] items-stretch gap-1 overflow-x-auto px-4 md:gap-3 md:px-6">

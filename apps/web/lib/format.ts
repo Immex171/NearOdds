@@ -1,5 +1,5 @@
 import { ONE, formatUnits, percent } from "./amounts";
-import type { Market, MarketStatus } from "./types";
+import type { Market, MarketStatus, PriceBasis } from "./types";
 
 export const money = (v: bigint, symbol: string, min = 2) => `${formatUnits(v, min, 6)} ${symbol}`;
 export const priceStr = (p: bigint | null) => (p == null ? "—" : formatUnits(p, 2, 4));
@@ -42,6 +42,10 @@ export function movement(m: Market): { delta: number; label: string } | null {
   const d = percent(m.lastYes) - percent(m.prevYes);
   return { delta: d, label: `${d >= 0 ? "▲" : "▼"} ${Math.abs(d)} pts vs 24h ago` };
 }
+
+/** What a displayed price is. A midpoint is not a trade. */
+export const basisLabel = (b: PriceBasis | undefined) =>
+  b === "midpoint" ? "midpoint of the best bid and ask" : b === "last_trade" ? "last confirmed trade" : b === "none" ? "no price yet" : "last trade";
 
 export const isTradable = (m: Market) => m.status === "open";
 

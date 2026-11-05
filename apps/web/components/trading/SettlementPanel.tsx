@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
 import { formatUnits } from "@/lib/amounts";
-import { useAdapterData, useApp } from "@/lib/app-context";
+import { holdingOf } from "@/lib/account";
+import { useAdapterData, useApp, useMarketAccount } from "@/lib/app-context";
 import { useTx } from "@/lib/hooks";
 import { cutoffLabel, dateTimeUtc, money } from "@/lib/format";
 import type { Market } from "@/lib/types";
@@ -12,18 +13,19 @@ const C = { bg: "bg-[#1C2027]", line: "border-[#2B3039]", mute: "text-[#969DA8]"
 
 /** Replaces the trade form once trading has ended. Driven by get_market().status, never by the clock. */
 export function SettlementPanel({ m, onManage }: { m: Market; onManage?: () => void }) {
-  const { adapter, account, accountId, session, setConnectOpen, showToast, refresh } = useApp();
+  const { adapter, accountId, session, setConnectOpen, showToast, refresh } = useApp();
+  const { account } = useMarketAccount(m);
   const { tx, run, busy } = useTx();
   const demo = adapter.id === "demo";
-  const sym = adapter.symbol;
+  const sym = m.token.symbol;
   const resolved = m.status === "resolved";
   const when = demo ? dateTimeUtc(m.closesAt) : cutoffLabel(m.closesAt);
-  const preview = useAdapterData((a) => (resolved && accountId ? a.redeemPreview(m.id, accountId) : Promise.resolve(null)), [m.id, resolved, accountId]);
+  const preview = useAdapterData((a) => (resolved && accountId ? a.redeemPreview(m, accountId) : Promise.resolve(null)), [m.id, resolved, accountId]);
   const p = preview.data;
   const mergeOpen = m.flags?.mergeOpen ?? !resolved;
 
   const redeem = async () => {
-    const ok = await run((r) => adapter.redeem(m.id, r));
+    const ok = await run((r) => adapter.redeem(m, r));
     if (ok) { showToast(demo ? "Demo redemption completed" : "Redeemed"); refresh(); }
   };
 
@@ -71,7 +73,7 @@ export function SettlementPanel({ m, onManage }: { m: Market; onManage?: () => v
             {accountId && p?.redeemable && (
               <>
                 <TransactionStatus tx={tx} demo={demo} />
-                <Btn className="min-h-12 w-full" disabled={busy || (session.kind === "wallet" && account?.registered === false)} onClick={() => void redeem()}>
+                <Btn className="min-h-12 w-full" disabled={busy || (session.kind === "wallet" && holdingOf(account, m)?.registered === false)} onClick={() => void redeem()}>
                   {busy ? "Working…" : demo ? "Simulate redeem" : "Redeem"}
                 </Btn>
               </>

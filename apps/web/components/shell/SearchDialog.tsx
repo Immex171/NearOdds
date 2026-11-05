@@ -3,12 +3,14 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useApp } from "@/lib/app-context";
 import { statusLabel } from "@/lib/format";
+import type { Market } from "@/lib/types";
 import { Icon } from "../ui/Icon";
 import { TopicIcon } from "../ui/bits";
 
 /** Combobox search: arrow keys move, Enter opens, Esc closes. Mobile collapses to an icon that expands the field. */
 export function SearchDialog() {
-  const { markets } = useApp();
+  const { adapter } = useApp();
+  const [found, setFound] = useState<Market[]>([]);
   const router = useRouter();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -18,11 +20,15 @@ export function SearchDialog() {
   const box = useRef<HTMLDivElement>(null);
   const listId = useId();
 
-  const results = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    if (!t || !markets) return [];
-    return markets.filter((m) => m.question.toLowerCase().includes(t) || m.category?.toLowerCase().includes(t) || m.tag?.toLowerCase() === t).slice(0, 7);
-  }, [q, markets]);
+  // Search runs against the backend (/v1/markets?q=) so markets beyond the loaded page are found too.
+  useEffect(() => {
+    const t = q.trim();
+    if (!t) return; // `results` is empty whenever the query is empty
+    let alive = true;
+    const id = setTimeout(() => { adapter.searchMarkets(t).then((r) => { if (alive) setFound(r); }).catch(() => { if (alive) setFound([]); }); }, 180);
+    return () => { alive = false; clearTimeout(id); };
+  }, [q, adapter]);
+  const results = useMemo(() => (q.trim() ? found.slice(0, 7) : []), [q, found]);
 
   useEffect(() => {
     const off = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) { setOpen(false); } };

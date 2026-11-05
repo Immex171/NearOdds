@@ -1,5 +1,7 @@
 import { prereq } from "./helpers/prereq.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { dbAvailable, freshDb } from "./helpers/db.js";
 import { Rpc } from "../src/near/rpc.js";
 import { Indexer, resolveRange } from "../src/indexer/runner.js";
@@ -161,6 +163,64 @@ describe.skipIf(!ok)("participant discovery is independent of the snapshot bound
     await reconcileMarket(fdb.db, rpc, "m_part", 110);
     const pf2 = (await app.inject("/v1/accounts/carol.testnet/portfolio")).json();
     expect(pf2.pendingHydration).toEqual([]); expect(pf2.markets[0].collateral.available).toBe(U(3));
+    await app.close();
+  });
+});
+
+describe.skipIf(!ok)("upgrade: participants missed by the old indexer are repaired from persisted events", () => {
+  let fdb: Awaited<ReturnType<typeof freshDb>>;
+  const repairSql = readFileSync(join(import.meta.dirname, "../migrations/007_repair_participants.sql"), "utf8");
+  beforeAll(async () => {
+    fdb = await freshDb();
+    await fdb.db.query(`INSERT INTO markets(market_ref, network, contract_id, internal_market_id, token_id, question, rules, resolution_source, cutoff_ns, resolver_id, token_meta, config, source, verified_at)
+      VALUES ('m_up','testnet',$1,'mkt-1','tok','Q','r','s','1900000000000000000','res','{"symbol":"t","decimals":6,"name":"t"}','{}','keeper', now())`, [M]);
+  });
+  afterAll(async () => { await fdb?.drop(); });
+
+  it("already-indexed historical events + no account_state row => repair finds the account (pending), hydration gives exact balances, no double counting, repeat is a no-op", async () => {
+    // State left by an OLD indexer: Alice's events are persisted (history only, snapshot boundary at 100) but she has no
+    // account_state and no participant row. Bob was handled correctly. A fill exists for volume.
+    const ins = (id: number, receipt: string, height: number, event: string, data: object) => fdb.db.query("INSERT INTO chain_events(market_ref, receipt_id, log_index, block_height, block_ts_ns, event, data) VALUES ('m_up',$1,0,$2,$3,$4,$5)", [receipt, height, String(height * 1_000_000_000), event, JSON.stringify(data)]).then(() => id);
+    await ins(1, "r1", 80, "deposit", { account_id: "alice.testnet", token_id: "t", amount: U(30) });
+    await ins(2, "r2", 85, "split", { account_id: "alice.testnet", market_id: "mkt-1", amount: U(10) });
+    await ins(3, "r3", 90, "offer_filled", { offer_id: "1", maker_id: "bob.testnet", taker_id: "alice.testnet", market_id: "mkt-1", outcome: "Yes", maker_side: "Sell", price: "600000", quantity: U(2), collateral_amount: U(1.2), remaining_quantity: U(3) });
+    await fdb.db.query("INSERT INTO fills(market_ref, receipt_id, log_index, offer_id, maker_id, taker_id, outcome, maker_side, price, quantity, collateral_amount, block_height, ts_ns) VALUES ('m_up','r3',0,1,'bob.testnet','alice.testnet','Yes','Sell',600000,$1,$2,90,90000000000)", [U(2), U(1.2)]);
+    await fdb.db.query("INSERT INTO account_state(market_ref, account_id, registered, available_collateral, reserved_collateral, yes, no, reserved_yes, reserved_no, updated_height) VALUES ('m_up','bob.testnet',true,$1,0,0,$2,$3,0,100)", [U(5), U(5), U(5)]);
+    await fdb.db.query("INSERT INTO market_participants(market_ref, account_id, first_seen_height, hydrated_at) VALUES ('m_up','bob.testnet',0,now())");   // what migration 006 created
+    await fdb.db.query("UPDATE markets SET snapshot_height=100, applied_height=100 WHERE market_ref='m_up'");
+    await fdb.db.query("INSERT INTO indexer_checkpoints(name, height) VALUES ('main', 120)");
+    const counts = async () => JSON.stringify([(await fdb.db.query("SELECT COUNT(*)::int n FROM chain_events")).rows[0], (await fdb.db.query("SELECT COUNT(*)::int n, SUM(collateral_amount) v FROM fills")).rows[0], (await fdb.db.query("SELECT height FROM indexer_checkpoints")).rows, (await fdb.db.query("SELECT * FROM account_state ORDER BY account_id")).rows]);
+    const before = await counts();
+    expect((await fdb.db.query("SELECT account_id FROM market_participants WHERE market_ref='m_up' ORDER BY 1")).rows.map((r: any) => r.account_id)).toEqual(["bob.testnet"]);   // Alice is missing
+
+    // ---- apply the repair
+    await fdb.db.query(repairSql);
+    const parts = (await fdb.db.query("SELECT account_id, first_seen_height, hydrated_at FROM market_participants WHERE market_ref='m_up' ORDER BY account_id")).rows;
+    expect(parts.map((p: any) => [p.account_id, p.first_seen_height, p.hydrated_at === null])).toEqual([["alice.testnet", "80", true], ["bob.testnet", "0", false]]);   // earliest height; Alice pending, Bob keeps his hydrated state
+    expect(await counts()).toBe(before);                                                                                    // nothing else moved
+    // pending => the API says so
+    const { buildApp } = await import("../src/api/app.js"); const { loadConfig } = await import("../src/config/index.js");
+    const truth = { offers: [], accounts: { "alice.testnet": acct("alice.testnet", { available_collateral: U(20), yes: U(12), no: U(10) }), "bob.testnet": acct("bob.testnet", { available_collateral: U(5), no: U(5), reserved_yes: U(5) }) } as Record<string, any> };
+    const rpc = fakeViewsRpc(truth);
+    const app = buildApp({ db: fdb.db, rpc, cfg: loadConfig({ DATABASE_URL: "x" } as any) });
+    let pf = (await app.inject("/v1/accounts/alice.testnet/portfolio")).json();
+    expect(pf.pendingHydration).toEqual(["m_up"]); expect(pf.markets).toEqual([]);
+
+    // ---- hydrate at a consistent block (contract views), then replay the old events: no double counting
+    expect((await reconcileMarket(fdb.db, rpc, "m_up", 120)).skipped).toBeUndefined();
+    pf = (await app.inject("/v1/accounts/alice.testnet/portfolio")).json();
+    expect(pf.pendingHydration).toEqual([]);
+    expect(pf.markets[0].collateral.available).toBe(U(20)); expect(pf.markets[0].positions.yes.total).toBe(U(12)); expect(pf.markets[0].positions.no.total).toBe(U(10));
+    const idx = new Indexer(fdb.db, fakeNeardata(new Map(), () => 0), {});
+    const replay = [block(80, [ev("deposit", { account_id: "alice.testnet", token_id: "t", amount: U(30) })], "r1"), block(85, [ev("split", { account_id: "alice.testnet", market_id: "mkt-1", amount: U(10) })], "r2")];
+    expect(await idx.processBlocks(replay)).toBe(0);                                         // receipts deduplicated
+    expect((await app.inject("/v1/accounts/alice.testnet/portfolio")).json().markets[0].collateral.available).toBe(U(20));
+    const afterHydration = await counts();
+    // ---- repeating the repair changes nothing
+    await fdb.db.query(repairSql); await fdb.db.query(repairSql);
+    expect(await counts()).toBe(afterHydration);
+    expect((await fdb.db.query("SELECT account_id, hydrated_at IS NOT NULL h FROM market_participants ORDER BY account_id")).rows).toEqual([{ account_id: "alice.testnet", h: true }, { account_id: "bob.testnet", h: true }]);
+    expect((await fdb.db.query("SELECT COUNT(*)::int n FROM fills")).rows[0].n).toBe(1);   // volume untouched
     await app.close();
   });
 });

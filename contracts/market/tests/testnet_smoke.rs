@@ -1716,36 +1716,168 @@ fn unique_tag() -> String {
     format!("{b36}{rand:08x}")
 }
 
-/// Steps in a journal that were submitted but have no recorded final result:
-/// the transactions a human must resolve before anything else is run.
-fn unresolved_steps(events: &[Value]) -> Vec<Uncertain> {
+/// Reads a run journal strictly: a missing or unreadable file, an empty journal,
+/// a malformed line or a record without an `event` is an ERROR, never "nothing to do".
+fn read_journal(path: &std::path::Path) -> Result<Vec<Value>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read journal {}: {e}", path.display()))?;
+    let mut events = vec![];
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(line)
+            .map_err(|e| format!("{}: line {} is not valid JSON: {e}", path.display(), i + 1))?;
+        if !v["event"].is_string() {
+            return Err(format!(
+                "{}: line {} has no \"event\" field",
+                path.display(),
+                i + 1
+            ));
+        }
+        events.push(v);
+    }
+    if events.is_empty() {
+        return Err(format!(
+            "{} contains no records; refusing to treat an empty journal as reconciled",
+            path.display()
+        ));
+    }
+    Ok(events)
+}
+
+/// A journal entry that cannot be resolved by polling a hash.
+#[derive(Debug, Clone, PartialEq)]
+struct ManualItem {
+    step: String,
+    why: String,
+}
+
+/// Everything in a journal that lacks a final outcome.
+#[derive(Debug, Default)]
+struct Unreconciled {
+    /// Submitted transactions (hash known) without a recorded final result.
+    by_hash: Vec<Uncertain>,
+    /// Submissions with NO hash and no outcome: `step_submit_error`, or a
+    /// `step_submitting` never followed by `step_submitted`. They may or may not
+    /// have executed and need a human to inspect the account's activity.
+    manual: Vec<ManualItem>,
+}
+
+/// Finds what is still unresolved. A `step_manual_resolved` record (written by a
+/// human after investigating) closes a manual item for that step.
+fn find_unreconciled(events: &[Value]) -> Unreconciled {
     let finished: std::collections::HashSet<String> = events
         .iter()
         .filter(|e| e["event"] == "step_done" || e["event"] == "step_resolved")
         .filter_map(|e| e["tx_hash"].as_str().map(String::from))
         .collect();
-    let mut out: Vec<Uncertain> = vec![];
-    for e in events
-        .iter()
-        .filter(|e| e["event"] == "step_submitted" || e["event"] == "step_uncertain")
-    {
-        let Some(hash) = e["tx_hash"].as_str() else {
-            continue;
-        };
-        if finished.contains(hash) || out.iter().any(|u| u.tx_hash == hash) {
-            continue;
+    let mut out = Unreconciled::default();
+    let mut open_submitting: Vec<String> = vec![];
+    let mut manual: Vec<ManualItem> = vec![];
+    let step_of = |e: &Value| e["step"].as_str().unwrap_or("?").to_string();
+    for e in events {
+        match e["event"].as_str().unwrap_or("") {
+            "step_submitting" => open_submitting.push(step_of(e)),
+            "step_submitted" | "step_uncertain" => {
+                let s = step_of(e);
+                if e["event"] == "step_submitted" {
+                    if let Some(i) = open_submitting.iter().position(|x| *x == s) {
+                        open_submitting.remove(i);
+                    }
+                }
+                let Some(hash) = e["tx_hash"].as_str() else {
+                    continue;
+                };
+                if finished.contains(hash) || out.by_hash.iter().any(|u| u.tx_hash == hash) {
+                    continue;
+                }
+                out.by_hash.push(Uncertain {
+                    step: s,
+                    tx_hash: hash.to_string(),
+                    signer: e["signer"].as_str().unwrap_or("unknown").to_string(),
+                    reason: e["reason"]
+                        .as_str()
+                        .unwrap_or("no result recorded")
+                        .to_string(),
+                });
+            }
+            "step_submit_error" => {
+                let s = step_of(e);
+                if let Some(i) = open_submitting.iter().position(|x| *x == s) {
+                    open_submitting.remove(i);
+                }
+                manual.push(ManualItem {
+                    step: s,
+                    why: format!(
+                        "the submit call failed ({}); it may or may not have been sent and no hash was recorded",
+                        e["error"].as_str().unwrap_or("unknown error")
+                    ),
+                });
+            }
+            "step_manual_resolved" => {
+                let s = step_of(e);
+                manual.retain(|m| m.step != s);
+                open_submitting.retain(|x| *x != s);
+            }
+            _ => {}
         }
-        out.push(Uncertain {
-            step: e["step"].as_str().unwrap_or("?").to_string(),
-            tx_hash: hash.to_string(),
-            signer: e["signer"].as_str().unwrap_or("unknown").to_string(),
-            reason: e["reason"]
-                .as_str()
-                .unwrap_or("no result recorded")
-                .to_string(),
+    }
+    for s in open_submitting {
+        manual.push(ManualItem {
+            step: s,
+            why: "submission started but neither a hash nor an error was recorded".into(),
         });
     }
+    out.manual = manual;
     out
+}
+
+/// Result of reconciling a journal.
+#[derive(Debug)]
+struct Reconciliation {
+    resolved: usize,
+    still_unknown: Vec<Uncertain>,
+    manual: Vec<ManualItem>,
+}
+
+impl Reconciliation {
+    /// Only true when every submission has a final outcome and nothing needs a human.
+    fn complete(&self) -> bool {
+        self.still_unknown.is_empty() && self.manual.is_empty()
+    }
+}
+
+/// Reads the journal (strictly), looks every unresolved hash up with `lookup`
+/// and appends `step_resolved` for those with a final result.
+fn reconcile_journal(
+    path: &std::path::Path,
+    lookup: impl Fn(&Uncertain) -> TxLookup,
+) -> Result<Reconciliation, String> {
+    let events = read_journal(path)?;
+    let pending = find_unreconciled(&events);
+    let journal = Journal::at(path.to_path_buf(), None);
+    let (mut resolved, mut still_unknown) = (0, vec![]);
+    for u in pending.by_hash {
+        let r = lookup(&u);
+        println!(
+            "  {} ({}) tx {} signer {}: {r:?}",
+            u.step, u.reason, u.tx_hash, u.signer
+        );
+        match r {
+            TxLookup::Succeeded | TxLookup::Failed(_) => {
+                journal.event(json!({ "event": "step_resolved", "step": u.step,
+                    "tx_hash": u.tx_hash, "signer": u.signer, "outcome": format!("{r:?}") }));
+                resolved += 1;
+            }
+            _ => still_unknown.push(u),
+        }
+    }
+    Ok(Reconciliation {
+        resolved,
+        still_unknown,
+        manual: pending.manual,
+    })
 }
 
 /// What a node says about one transaction hash.
@@ -2006,27 +2138,26 @@ async fn resolve_uncertain_on_testnet() {
     );
     let url = std::env::var("NEARODDS_RPC_URL")
         .unwrap_or_else(|_| "https://test.rpc.fastnear.com".to_string());
-    let journal = Journal::at(path, None);
-    let pending = unresolved_steps(&journal.events());
-    println!("{} unresolved transaction(s) in the journal", pending.len());
-    let mut still_unknown = 0;
-    for u in pending {
-        let r = lookup_tx(&url, &u.tx_hash, &u.signer);
+    let rec = reconcile_journal(&path, |u| lookup_tx(&url, &u.tx_hash, &u.signer))
+        .unwrap_or_else(|e| panic!("CANNOT RECONCILE: {e}"));
+    println!("{} transaction(s) resolved in this pass", rec.resolved);
+    for u in &rec.still_unknown {
         println!(
-            "  {} ({}) tx {} signer {}: {r:?}",
-            u.step, u.reason, u.tx_hash, u.signer
+            "STILL UNRESOLVED: {} tx {} (signer {})",
+            u.step, u.tx_hash, u.signer
         );
-        match r {
-            TxLookup::Succeeded | TxLookup::Failed(_) => journal.event(json!({
-                "event": "step_resolved", "step": u.step, "tx_hash": u.tx_hash,
-                "signer": u.signer, "outcome": format!("{r:?}") })),
-            _ => still_unknown += 1,
-        }
     }
-    assert_eq!(
-        still_unknown, 0,
-        "{still_unknown} transaction(s) are still unresolved; try again later"
+    for m in &rec.manual {
+        println!("MANUAL INVESTIGATION REQUIRED: '{}': {}", m.step, m.why);
+    }
+    assert!(
+        rec.complete(),
+        "NOT reconciled: {} hash(es) still unresolved, {} item(s) need manual investigation (see above). \
+         After checking the account's activity, record a decision with a `step_manual_resolved` line.",
+        rec.still_unknown.len(),
+        rec.manual.len()
     );
+    println!("journal fully reconciled");
 }
 
 /// Moves (almost) all NEAR from faucet-funded accounts into the parent so one
@@ -2300,7 +2431,7 @@ async fn status_outage_after_success_is_uncertain_and_never_resubmitted() {
     assert_eq!(u["operation"], "transfer (injected status outage)");
     assert!(u["tx_hash"].as_str().unwrap().len() >= 40);
     // And the journal tells a resumer exactly which hash to poll.
-    let pending = unresolved_steps(&ev);
+    let pending = find_unreconciled(&ev).by_hash;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].tx_hash, u["tx_hash"].as_str().unwrap());
     assert_eq!(pending[0].signer, root.id().as_str());
@@ -2316,7 +2447,7 @@ fn resolved_and_done_steps_are_not_reported_unresolved() {
         json!({"event":"step_submitted","step":"c","tx_hash":"H3","signer":"z.testnet"}),
         json!({"event":"step_resolved","step":"c","tx_hash":"H3"}),
     ];
-    let p = unresolved_steps(&ev);
+    let p = find_unreconciled(&ev).by_hash;
     assert_eq!(p.len(), 1);
     assert_eq!(
         (
@@ -2585,4 +2716,121 @@ fn run_ids_are_unique_and_fit_account_name_limits() {
     let longest = format!("probe-demo-{t}.nearodds-deploy.testnet");
     assert!(longest.len() <= 64, "{longest}");
     assert!(longest.parse::<near_workspaces::AccountId>().is_ok());
+}
+
+// ---- journal reconciliation ------------------------------------------------
+
+fn write_journal(label: &str, lines: &[Value]) -> PathBuf {
+    let p = scratch_dir(label).join("run.jsonl");
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(&p, body).unwrap();
+    p
+}
+
+#[test]
+fn reconcile_fails_clearly_when_the_journal_is_missing() {
+    let p = scratch_dir("missing").join("nope.jsonl");
+    let e = reconcile_journal(&p, |_| panic!("no lookups expected")).unwrap_err();
+    assert!(e.contains("cannot read journal"), "{e}");
+}
+
+#[test]
+fn reconcile_fails_clearly_on_malformed_or_empty_journals() {
+    // malformed JSON on line 2
+    let p = scratch_dir("bad").join("run.jsonl");
+    std::fs::write(&p, "{\"event\":\"run_start\"}\n{not json\n").unwrap();
+    let e = reconcile_journal(&p, |_| panic!("no lookups")).unwrap_err();
+    assert!(e.contains("line 2") && e.contains("not valid JSON"), "{e}");
+    // valid JSON that is not a journal record
+    let p = scratch_dir("bad2").join("run.jsonl");
+    std::fs::write(&p, "{\"step\":\"a\"}\n").unwrap();
+    assert!(reconcile_journal(&p, |_| panic!())
+        .unwrap_err()
+        .contains("no \"event\""));
+    // a truncated final line
+    let p = scratch_dir("bad3").join("run.jsonl");
+    std::fs::write(&p, "{\"event\":\"run_start\"}\n{\"event\":\"step_subm").unwrap();
+    assert!(reconcile_journal(&p, |_| panic!()).is_err());
+    // an empty journal is not "0 unresolved"
+    let p = scratch_dir("empty").join("run.jsonl");
+    std::fs::write(&p, "\n\n").unwrap();
+    assert!(reconcile_journal(&p, |_| panic!())
+        .unwrap_err()
+        .contains("no records"));
+    // a directory is unreadable
+    assert!(reconcile_journal(&scratch_dir("dir"), |_| panic!()).is_err());
+}
+
+#[test]
+fn submit_errors_and_unmatched_submissions_need_manual_investigation() {
+    let p = write_journal(
+        "manual",
+        &[
+            json!({"event":"run_start"}),
+            json!({"event":"step_submitting","step":"alice: fill 8"}),
+            json!({"event":"step_submit_error","step":"alice: fill 8","error":"error sending request"}),
+            json!({"event":"step_submitting","step":"bob: withdraw"}), // process died before any outcome
+        ],
+    );
+    let r = reconcile_journal(&p, |_| panic!("no hash to look up")).unwrap();
+    assert!(!r.complete());
+    assert!(r.still_unknown.is_empty());
+    let steps: Vec<_> = r.manual.iter().map(|m| m.step.as_str()).collect();
+    assert_eq!(steps, ["alice: fill 8", "bob: withdraw"]);
+    assert!(r.manual[0].why.contains("no hash was recorded"));
+    assert!(r.manual[1].why.contains("neither a hash nor an error"));
+    // A human's recorded decision closes the item; nothing else does.
+    let j = Journal::at(p.clone(), None);
+    j.event(json!({"event":"step_manual_resolved","step":"alice: fill 8","note":"checked explorer: not executed"}));
+    let r = reconcile_journal(&p, |_| panic!()).unwrap();
+    assert_eq!(r.manual.len(), 1);
+    assert_eq!(r.manual[0].step, "bob: withdraw");
+}
+
+#[test]
+fn hash_unresolved_steps_stay_unresolved_until_a_final_result_is_found() {
+    let p = write_journal(
+        "hash",
+        &[
+            json!({"event":"step_submitting","step":"mint"}),
+            json!({"event":"step_submitted","step":"mint","tx_hash":"H1","signer":"o.testnet"}),
+            json!({"event":"step_uncertain","step":"mint","tx_hash":"H1","signer":"o.testnet","reason":"rpc"}),
+        ],
+    );
+    let r = reconcile_journal(&p, |_| TxLookup::NotFound).unwrap();
+    assert!(!r.complete());
+    assert_eq!(r.still_unknown.len(), 1);
+    assert_eq!(r.resolved, 0);
+    // Not found must not have been journaled as resolved.
+    assert!(!read_journal(&p)
+        .unwrap()
+        .iter()
+        .any(|e| e["event"] == "step_resolved"));
+    let r = reconcile_journal(&p, |_| TxLookup::Succeeded).unwrap();
+    assert!(r.complete() && r.resolved == 1);
+    // Idempotent: a second pass finds nothing left.
+    let r = reconcile_journal(&p, |_| panic!("already resolved")).unwrap();
+    assert!(r.complete() && r.resolved == 0);
+}
+
+#[test]
+fn fully_reconciled_valid_journal_is_complete() {
+    let p = write_journal(
+        "ok",
+        &[
+            json!({"event":"run_start"}),
+            json!({"event":"step_submitting","step":"a"}),
+            json!({"event":"step_submitted","step":"a","tx_hash":"H1","signer":"x.testnet"}),
+            json!({"event":"step_done","step":"a","tx_hash":"H1","ok":true}),
+            json!({"event":"step_submitting","step":"a"}), // same step name, run twice
+            json!({"event":"step_submitted","step":"a","tx_hash":"H2","signer":"x.testnet"}),
+            json!({"event":"step_resolved","step":"a","tx_hash":"H2"}),
+        ],
+    );
+    let r = reconcile_journal(&p, |_| panic!("nothing to look up")).unwrap();
+    assert!(r.complete());
+    assert_eq!(
+        (r.resolved, r.still_unknown.len(), r.manual.len()),
+        (0, 0, 0)
+    );
 }

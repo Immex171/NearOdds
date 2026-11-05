@@ -149,7 +149,10 @@ If a run stops with `UNCERTAIN: ... was submitted but its outcome could not be r
 1. Do **not** start a new run to "retry" the step; it may already have executed.
 2. Resolve the recorded hash(es) by polling them (read-only, signs nothing):
    `NEARODDS_RESUME_JOURNAL=deployments/runs/<kind>-<tag>.jsonl cargo test -p nearodds-market --test testnet_smoke resolve_uncertain_on_testnet -- --ignored --nocapture`.
-   It appends `step_resolved` to the journal for each transaction whose final result it finds, and fails while any is still unknown.
+   It appends `step_resolved` to the journal for each transaction whose final result it finds, and **fails** (it never prints "reconciled")
+   if the journal is missing, unreadable, empty or malformed, if any hash is still unknown, or if any `step_submit_error` / unmatched `step_submitting`
+   remains: those have no hash, may or may not have executed, and need manual investigation of the account's activity. After investigating, append
+   `{"event":"step_manual_resolved","step":"<step name>","note":"..."}` to the journal to close the item.
    A node that has no record of a hash (`UNKNOWN_TRANSACTION`) is **not** proof it never executed; check the affected account's balances
    and state on the chain before redoing anything.
 3. The interrupted run is not continued automatically. Finish the remaining operations by hand or with the single-purpose scripts
@@ -208,11 +211,25 @@ The contract has **no `create_market` method**: one deployment is one market. Th
    `split_cutoff_ns` is immutable and must be in the future; the rules text should quote the question date and the exact cutoff.
 4. Read `get_config` and verify `resolver_id` and `collateral_token_id`; register the token contract's storage for the market account if needed;
    verify the on-chain code hashes against the built artifacts.
-5. Optionally seed liquidity (`storage_deposit`, `ft_transfer_call` with msg `deposit`, `split`, `create_offer`, as in `run_demo`).
+5. Optionally seed liquidity (`storage_deposit`, `ft_transfer_call` with msg `deposit`, `split_position`, `create_offer`, as in `run_demo`).
 6. After the cutoff, and once the source named in `resolution_source` has published, the resolver calls `resolve_market({ market_id, outcome, evidence })`.
 
-Every mutating call needs exactly 1 yoctoNEAR except `storage_deposit` (attach the storage cost) and the account-creating batch. Treat any
-transaction whose result you cannot read as **uncertain** (see above), never as failed.
+Attached deposits are **method-specific**; do not apply one rule to every call:
+
+| Call | Attached deposit |
+| - | - |
+| market `new`, token `new` (initialization, in the deploy batch) | **0** (not payable) |
+| token `mint` (fixture, owner only) | **0** (not payable) |
+| market `storage_deposit` | the registration cost from `get_config().storage_cost_per_account` (0.04096 NEAR for 4096 bytes); see below |
+| token `storage_deposit` (NEP-145, to register an account with the token) | the harness attaches 0.01 NEAR for `registration_only` (the token's own minimum is 0.00125 NEAR) |
+| token `ft_transfer_call` (deposit into the market, msg `deposit`) | exactly **1 yoctoNEAR** (NEP-141) |
+| market `withdraw`, `split_position`, `merge_positions`, `create_offer`, `fill_offer`, `cancel_offer`, `resolve_market`, `redeem` | exactly **1 yoctoNEAR** each (`assert_one_yocto`) |
+| views, `ft_on_transfer`, `on_withdraw_complete` | none (views are free; the other two are only called by contracts) |
+
+Storage deposits are separate from the 1 yoctoNEAR rule. A market account is registered once with `storage_deposit` (the cost above buys a
+4096-byte allowance: an account record, a pending-withdrawal record and 10 open offers); it is not attached to trading calls.
+The account-creating transactions fund the new sub-account's balance instead (token 2 NEAR, market 3 NEAR in the demo).
+Treat any transaction whose result you cannot read as **uncertain** (see above), never as failed.
 
 ## Notes and trust
 

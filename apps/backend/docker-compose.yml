@@ -1,0 +1,17 @@
+# Local PostgreSQL for NearOdds backend (host port 5440 to avoid clashing with other projects).
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: nearodds
+      POSTGRES_PASSWORD: nearodds
+      POSTGRES_DB: nearodds
+    ports: ["5440:5432"]
+    volumes: ["nearodds_pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nearodds"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  nearodds_pg:

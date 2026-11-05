@@ -1,0 +1,9 @@
+[
+  {
+    "id": "market-wasm",
+    "version": "1.0.0",
+    "path": "../../target/wasm/market.wasm",
+    "sha256": "b41ea88129be572c3f3c48e4fcaec31afa12aca4d49c97cf237bea88f4f22d45",
+    "sourceVersion": "462871b463539aee5a9374eddb92b6a3e71b9e2a"
+  }
+]

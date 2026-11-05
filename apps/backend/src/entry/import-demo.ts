@@ -1,0 +1,21 @@
+import { resolve } from "node:path";
+import { migrate } from "../db/index.js";
+import { importDemo, readDemoManifest } from "../registry/index.js";
+import { backfillTransactions } from "../indexer/runner.js";
+import { reconcileMarket } from "../indexer/reconcile.js";
+import { boot } from "./common.js";
+const { cfg, db, rpc } = boot();
+await migrate(db);
+const path = resolve(process.argv[2] ?? "../../deployments/testnet-demo.json");
+const manifest = readDemoManifest(path);
+const r = await importDemo(db, rpc, cfg.network, manifest);
+console.log("imported demo as", r.ref, "code hash", r.verification.codeHash);
+// Backfill the manifest's own transactions through RPC (same ingest path as the live indexer).
+const a = manifest.accounts;
+const senders = [a.liquidity_provider, a.probe_trader, a.resolver_and_token_owner].filter(Boolean) as string[];
+const bf = await backfillTransactions(db, rpc, manifest.steps.map((s) => ({ txHash: s.tx_hash, senders })));
+console.log("backfilled events:", bf.ingested, "txs not retrievable:", bf.missing.length);
+const blk = await rpc.finalBlock();
+const rep = await reconcileMarket(db, rpc, r.ref, blk.height);
+console.log("reconcile @", rep.blockHeight, "ok:", rep.ok, "offers:", rep.offersChecked, "offerDrift:", rep.offerDrift, "accountDrift:", rep.accountDrift.slice(0, 6));
+await db.end();

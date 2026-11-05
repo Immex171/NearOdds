@@ -1,0 +1,33 @@
+{
+  "name": "@nearodds/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "api": "tsx src/entry/api.ts",
+    "worker": "tsx src/entry/worker.ts",
+    "migrate": "tsx src/entry/migrate.ts",
+    "import-demo": "tsx src/entry/import-demo.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.4.1",
+    "@fastify/swagger": "^9.9.3",
+    "@nearodds/types": "workspace:^",
+    "bs58": "^6.0.0",
+    "fastify": "^5.12.8",
+    "near-api-js": "^7.4.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

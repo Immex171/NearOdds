@@ -26,6 +26,7 @@ export interface Config {
   artifactsFile: string;
   marketFundingYocto: bigint;
   faucet: { enabled: boolean; tokenId: string | null; cooldownSeconds: number; amount: bigint; perAccountLimit: bigint; globalDailyLimit: bigint; nearBudgetYocto: bigint };
+  bot: { executionEnabled: boolean; account: string | null; credentialsFile: string | null; cycleSeconds: number };
   txPollTimeoutMs: number;
   rpcReadRetries: number;
 }
@@ -59,6 +60,7 @@ export function loadConfig(e: NodeJS.ProcessEnv = env): Config {
       globalDailyLimit: big(e.FAUCET_GLOBAL_DAILY_LIMIT, "10000000000"),
       nearBudgetYocto: big(e.FAUCET_NEAR_BUDGET_YOCTO, "500000000000000000000000"),
     },
+    bot: { executionEnabled: bool(e.BOT_EXECUTION_ENABLED, false), account: e.BOT_ACCOUNT || null, credentialsFile: e.BOT_CREDENTIALS_FILE || null, cycleSeconds: Number(e.BOT_CYCLE_SECONDS ?? 15) },
     txPollTimeoutMs: Number(e.TX_POLL_TIMEOUT_MS ?? 90000),
     rpcReadRetries: Number(e.RPC_READ_RETRIES ?? 4),
   };

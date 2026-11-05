@@ -41,7 +41,7 @@ export async function keeperEnv(sbx: Sandbox, db: Db, chain: TestChain, deployer
     DATABASE_URL: "x", NEAR_NETWORK: "sandbox", NEAR_RPC_URL: sbx.rpcUrl, KEYSTORE_DIR: ks,
     DEPLOYER_ACCOUNT: deployer.accountId, DEPLOYER_CREDENTIALS_FILE: creds, RESOLVER_ACCOUNT: deployer.accountId, RESOLVER_CREDENTIALS_FILE: creds,
     TOKEN_OWNER_ACCOUNT: deployer.accountId, TOKEN_OWNER_CREDENTIALS_FILE: creds,
-    APPROVED_ARTIFACTS_FILE: artifacts, ADMIN_ACCOUNTS: deployer.accountId, TX_POLL_TIMEOUT_MS: "60000",
+    APPROVED_ARTIFACTS_FILE: artifacts, ADMIN_ACCOUNTS: deployer.accountId, TX_POLL_TIMEOUT_MS: "60000", BOT_EXECUTION_ENABLED: "true",
   } as NodeJS.ProcessEnv);
   const rpc = new Rpc({ url: sbx.rpcUrl, retries: 2, backoffMs: 50 });
   const deps = makeDeps(cfg, db, rpc);

@@ -98,3 +98,48 @@ export interface ApiOpsStatus {
   transactions: { unresolvedCount: number; unresolved: { opKey: string; txHash: string; signer: string; state: string; description: string; note: string | null; updatedAt: string }[] };
   generatedAt: string;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Trading bot (administrator API, /v1/admin/trading-bots). Execution is Sandbox/testnet only and OFF by default.
+
+export type ApiBotMode = "paper" | "execute";
+export type ApiBotDesiredState = "disabled" | "running" | "paused" | "stopped";
+/** Never `paused`/`stopped` while submissions or cancellations are unresolved (`pausing`/`stopping` instead). */
+export type ApiBotState = "disabled" | "paper" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "uncertain" | "needs_funding" | "setup_required";
+export type ApiBotSlot = "YES_BUY" | "YES_SELL" | "NO_BUY" | "NO_SELL";
+
+export interface ApiBotReference { yesPrice: string; noPrice: string; label: string; source: string; asOf: string; expiresAt: string; expired: boolean; note: string }
+export interface ApiBotReason { code: string; message: string; slot?: ApiBotSlot }
+export interface ApiBotQuote { offerId: string; offerRef: string; slot: ApiBotSlot; price: string; quantity: string; remaining: string; expiresAtNs: string | null; origin: "created" | "adopted" }
+export interface ApiBotMarketStatus {
+  marketRef: string; enabled: boolean; question: string | null;
+  /** wallet/contract identity: offers and balances are scoped to this contract */
+  contract: { contractId: string; marketId: string; tokenId: string } | null;
+  reference: ApiBotReference | null;
+  lastChainRead: { at: string | null; blockHeight: number | null } | null;
+  balances: { collateral: { available: string; reserved: string } | null; shares: { yes: { available: string; reserved: string }; no: { available: string; reserved: string } } | null; tokenBalance: string; nativeBalanceYocto: string; registeredWithToken: boolean; registeredWithMarket: boolean } | null;
+  /** after resolution: remaining positions and what redeem would pay (settlement is a manual wallet step) */
+  position: { outcome: Outcome | null; redeemable: boolean; payout: string; releasedCollateral: string; winningShares: string } | null;
+  needsFunding: boolean; openQuotes: ApiBotQuote[];
+  lastDecision: { id: string; outcome: string; at: string; reasons: ApiBotReason[]; actions: unknown[] } | null;
+}
+export interface ApiBotStatus {
+  id: string; slug: string;
+  account: { accountId: string; network: string; credentialsConfigured: boolean };
+  mode: ApiBotMode; desiredState: ApiBotDesiredState; state: ApiBotState; stateReason: string | null; configVersion: number;
+  execution: { enabledByEnvironment: boolean; networkAllowed: boolean; note: string };
+  limits: Record<string, string | number>; strategy: Record<string, string | number>; funding: Record<string, string | number>;
+  spending: { nativeSpentYocto: string; nativeLimitYocto: string; collateralDepositedByMarket: Record<string, string> };
+  markets: ApiBotMarketStatus[];
+  pendingOperations: { id: string; marketRef: string; kind: string; slot: ApiBotSlot | null; opKey: string; state: "proposed" | "submitted" | "uncertain"; txHash: string | null }[];
+  fills: { count: number; volume: string; note: string };
+}
+export interface ApiBotSummary { id: string; slug: string; account: ApiBotStatus["account"]; mode: ApiBotMode; desiredState: ApiBotDesiredState; state: ApiBotState; stateReason: string | null; configVersion: number; markets: number }
+export interface ApiBotPreview { botId: string; configVersion: number; tradedNothing: true; markets: { marketRef: string; blockHeight?: number; outcome: string; legs?: { slot: ApiBotSlot; price: string }[]; referenceNo?: string | null; actions: unknown[]; reasons: ApiBotReason[] }[] }
+export interface ApiBotConfigInput {
+  markets: { marketRef: string; enabled?: boolean; reference: { yesPrice: string; label: string; source: string; asOf: string; expiresAt: string } | null; quantityPerQuote?: string }[];
+  strategy: { spread: string; quantityPerQuote: string; quoteLifetimeSeconds: number; requoteThresholdPct?: number; refreshBeforeExpirySeconds?: number };
+  funding?: { trancheId?: number; depositCollateral?: string; splitCollateral?: string };
+  limits: { maxOrderQuantity: string; maxYesInventory: string; maxNoInventory: string; maxCollateralPerMarket: string; maxCollateralTotal: string; maxActiveOffersPerMarket: number; maxNativeSpendYocto: string; minNativeReserveYocto: string; estimatedTxFeeYocto?: string; maxTransactionsPerMinute: number; referenceMaxAgeSeconds: number; maxChainDataAgeSeconds: number; cutoffBufferSeconds: number };
+}
+export interface ApiBotCreateInput { slug: string; accountId: string; network: string; credentialsEnv?: string; config: ApiBotConfigInput }

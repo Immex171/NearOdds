@@ -12,6 +12,7 @@ import { registerStreamRoutes } from "./routes-stream.js";
 import { registerAuthRoutes } from "./routes-auth.js";
 import { registerAdminRoutes } from "./routes-admin.js";
 import { registerFaucetRoutes } from "./routes-faucet.js";
+import { registerTradingBotRoutes } from "./routes-trading-bots.js";
 import { openapi } from "./openapi.js";
 
 export interface Ctx { db: Db; rpc: Rpc; cfg: Config; auth: AuthService; streamPollMs?: number }
@@ -57,5 +58,6 @@ export function buildApp(ctx: Omit<Ctx, "auth"> & { auth?: AuthService }): Fasti
   registerAuthRoutes(app, full);
   registerAdminRoutes(app, full);
   registerFaucetRoutes(app, full);
+  registerTradingBotRoutes(app, full);
   return app;
 }

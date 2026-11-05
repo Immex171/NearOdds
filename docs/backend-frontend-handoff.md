@@ -83,3 +83,6 @@ Reconnect: `EventSource` retries automatically (`retry: 3000`). The stream carri
 ## Resolution sources actually implemented
 * **Reviewed evidence** (all markets today, including Lagos): an admin proposes outcome + evidence reference + retrieval time, evidence must be retrieved after the observation period ends, then approval, then the keeper submits `resolve_market`. Missing, late or ambiguous evidence stays pending; it is never turned into NO.
 * **Automatic providers:** none registered in production. No NiMet API is assumed.
+
+## Trading bot administration (admin sessions only)
+`/v1/admin/trading-bots` (list, create, status, versioned config, preview, start paper|execute, pause, stop, orders/fills/decisions/operations). Full behaviour, state machine, response example and the bounded testnet procedure: **`docs/trading-bot.md`**. Types: `ApiBotStatus`, `ApiBotPreview`, `ApiBotConfigInput` in `@nearodds/types`. Render `state` with `stateReason`, list `reasons[]` for skipped decisions, show `lastChainRead` age, and never present `pausing`/`stopping` as finished (open offers can still be filled). Execute mode is refused with `409 execution_disabled` unless the environment enables it (Sandbox/testnet only).

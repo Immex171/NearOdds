@@ -43,7 +43,8 @@ const MAX_ATTEMPTS = 60;
 
 /** Claim and run one job. Returns false when idle. */
 export async function runOne(db: Db, workerId: string, handlers: Record<string, Handler>, kinds?: string[]): Promise<boolean> {
-  const job = await claim(db, workerId, 60, kinds);
+  // A worker claims ONLY the job kinds it has handlers for (keeper and trading-bot workers share the jobs table).
+  const job = await claim(db, workerId, 60, kinds ?? Object.keys(handlers));
   if (!job) return false;
   const h = handlers[job.kind];
   const timer = setInterval(() => { db.query("UPDATE jobs SET lease_until=now() + interval '60 seconds' WHERE id=$1 AND owner=$2", [job.id, job.owner]).catch(() => {}); }, 15_000);

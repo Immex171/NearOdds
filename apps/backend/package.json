@@ -14,7 +14,8 @@
     "db:down": "docker compose down",
     "test:ci": "vitest run --reporter=default --reporter=json --outputFile.json=test-report.json && node scripts/summarize-tests.mjs test-report.json",
     "plan-creation": "tsx src/entry/plan-creation.ts",
-    "create-once": "tsx src/entry/create-once.ts"
+    "create-once": "tsx src/entry/create-once.ts",
+    "bot:worker": "tsx src/entry/trading-bot.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.4.1",

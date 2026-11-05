@@ -1,0 +1,19 @@
+{"event":"run_start","kind":"smoke","tag":"3877627","parent":"nearodds-deploy.testnet","git_commit":"a3acfab04e56241fc50a804ec4db30eca04a7da2","unix_time":1793877627}
+{"event":"account_creating","account":"tok-3877627.nearodds-deploy.testnet","funding_milli":2000,"public_key":"ed25519:2Ruknk8P1Q7LZoxoAdhjXsPduvKjtDqLDqUwV7XyZcM2","unix_time":1793877628}
+{"event":"account_created","account":"tok-3877627.nearodds-deploy.testnet","unix_time":1793877630}
+{"event":"step_submitting","step":"token: deploy + init (one tx)","attempt":1,"unix_time":1793877630}
+{"event":"step_submitted","step":"token: deploy + init (one tx)","tx_hash":"B6vfxwcmpfaBQMCGpb5R8h9Gx694RKgAPJwYjax4dCBk","unix_time":1793877632}
+{"event":"step_done","step":"token: deploy + init (one tx)","tx_hash":"B6vfxwcmpfaBQMCGpb5R8h9Gx694RKgAPJwYjax4dCBk","ok":true,"expected_failure":false,"unix_time":1793877633}
+{"event":"account_creating","account":"mkt-3877627.nearodds-deploy.testnet","funding_milli":3000,"public_key":"ed25519:HRpqMiEgA8H1sq23YpCadVBJZCoEr4QF17mi7MPmUXn1","unix_time":1793877633}
+{"event":"account_created","account":"mkt-3877627.nearodds-deploy.testnet","unix_time":1793877696}
+{"event":"step_submitting","step":"market: deploy + init (one tx)","attempt":1,"unix_time":1793877696}
+{"event":"step_submitted","step":"market: deploy + init (one tx)","tx_hash":"vgKNakyuERvvoEdMVyBGWLAKnvPkvhTgifPJvuBHZFR","unix_time":1793877699}
+{"event":"step_done","step":"market: deploy + init (one tx)","tx_hash":"vgKNakyuERvvoEdMVyBGWLAKnvPkvhTgifPJvuBHZFR","ok":true,"expected_failure":false,"unix_time":1793877700}
+{"event":"account_creating","account":"alice-3877627.nearodds-deploy.testnet","funding_milli":500,"public_key":"ed25519:1Meihft9iFoEmhM3srXk3V3hyhs1j2THkeY5D9UG8ap","unix_time":1793877700}
+{"event":"account_created","account":"alice-3877627.nearodds-deploy.testnet","unix_time":1793877763}
+{"event":"account_creating","account":"bob-3877627.nearodds-deploy.testnet","funding_milli":500,"public_key":"ed25519:9HyvuZBAk4NwP727aE5d8rbu1w3vZ7FmJuR2wk9iwBBz","unix_time":1793877763}
+{"event":"account_created","account":"bob-3877627.nearodds-deploy.testnet","unix_time":1793877767}
+{"event":"account_creating","account":"carol-3877627.nearodds-deploy.testnet","funding_milli":500,"public_key":"ed25519:FstW8fUEqZbvqJTuva5mRectgEjg4ZGEfZPpn54hvw89","unix_time":1793877767}
+{"event":"account_created","account":"carol-3877627.nearodds-deploy.testnet","unix_time":1793877770}
+{"event":"step_submitting","step":"token: storage_deposit","attempt":1,"unix_time":1793877770}
+{"event":"step_submitted","step":"token: storage_deposit","tx_hash":"C6D2yxWFoBqNR2uAmVsbnnBNvUADWjwnmhj69VFfNQC8","unix_time":1793877770}

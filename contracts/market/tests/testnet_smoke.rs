@@ -140,15 +140,21 @@ impl Recorder {
         let hash = status.hash().to_string();
         self.journal
             .event(json!({ "event": "step_submitted", "step": step, "tx_hash": hash }));
-        for poll in 0..45 {
-            match status.status().await {
-                Ok(Poll::Ready(r)) => {
+        // Wall-clock patience (each RPC call is also bounded): a healthy testnet
+        // transaction finishes within seconds, so 60 s without the node ever
+        // reporting it means it was dropped.
+        let start = std::time::Instant::now();
+        let mut polls = 0;
+        while start.elapsed() < std::time::Duration::from_secs(60) {
+            polls += 1;
+            match tokio::time::timeout(std::time::Duration::from_secs(15), status.status()).await {
+                Ok(Ok(Poll::Ready(r))) => {
                     self.last_hash = hash;
                     return Some(r);
                 }
-                Ok(Poll::Pending) => {}
-                Err(e) => {
-                    if poll % 10 == 1 {
+                Ok(Ok(Poll::Pending)) | Err(_) => {}
+                Ok(Err(e)) => {
+                    if polls % 8 == 1 {
                         eprintln!("  ... polling '{step}' ({hash}): {e}");
                     }
                 }

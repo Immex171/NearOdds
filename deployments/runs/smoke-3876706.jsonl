@@ -1,0 +1,28 @@
+{"event":"run_start","kind":"smoke","tag":"3876706","parent":"nearodds-deploy.testnet","git_commit":"8ad3f06333357768a6dfc62327e707cd3e4be3f4","unix_time":1793876706}
+{"event":"account_creating","account":"tok-3876706.nearodds-deploy.testnet","funding_milli":2000,"public_key":"ed25519:4ec3faJeR7X3ZSf8w3W8mVWsHJNYjwahBv3KeoMeiXXo","unix_time":1793876706}
+{"event":"account_created","account":"tok-3876706.nearodds-deploy.testnet","unix_time":1793876719}
+{"event":"step_submitting","step":"token: deploy + init (one tx)","unix_time":1793876719}
+{"event":"step_submitted","step":"token: deploy + init (one tx)","tx_hash":"A2woNTXedyjJBVvSzGHTCGYLpJDNWbq3z9iPQ22ifbDf","unix_time":1793876720}
+{"event":"step_done","step":"token: deploy + init (one tx)","tx_hash":"A2woNTXedyjJBVvSzGHTCGYLpJDNWbq3z9iPQ22ifbDf","ok":true,"expected_failure":false,"unix_time":1793876722}
+{"event":"account_creating","account":"mkt-3876706.nearodds-deploy.testnet","funding_milli":3000,"public_key":"ed25519:89Kmm7NeQ6v3uRAi2e9XfieK7bSwYjKievtFo6rMx6n1","unix_time":1793876722}
+{"event":"account_created","account":"mkt-3876706.nearodds-deploy.testnet","unix_time":1793876724}
+{"event":"step_submitting","step":"market: deploy + init (one tx)","unix_time":1793876724}
+{"event":"step_submitted","step":"market: deploy + init (one tx)","tx_hash":"CyYNhFdbmtyyXxYKUKxrCjstkacxDZqxS9AdcJHMAnHX","unix_time":1793876726}
+{"event":"step_done","step":"market: deploy + init (one tx)","tx_hash":"CyYNhFdbmtyyXxYKUKxrCjstkacxDZqxS9AdcJHMAnHX","ok":true,"expected_failure":false,"unix_time":1793876727}
+{"event":"account_creating","account":"alice-3876706.nearodds-deploy.testnet","funding_milli":500,"public_key":"ed25519:FjQ4HH5xwRhrR8E84U2KcJquouAZtbMV6ukETH5ZVA4o","unix_time":1793876727}
+{"event":"account_created","account":"alice-3876706.nearodds-deploy.testnet","unix_time":1793876760}
+{"event":"account_creating","account":"bob-3876706.nearodds-deploy.testnet","funding_milli":500,"public_key":"ed25519:BPt9K3ErfVrr6yRc3y2PF49ZyTL1CPjEKvQ77uYAVJcz","unix_time":1793876760}
+{"event":"account_created","account":"bob-3876706.nearodds-deploy.testnet","unix_time":1793876762}
+{"event":"account_creating","account":"carol-3876706.nearodds-deploy.testnet","funding_milli":500,"public_key":"ed25519:93o8UrMntCJUHq1vQMJ9GsHefHRQCMxauJXbeNG4z62V","unix_time":1793876762}
+{"event":"account_created","account":"carol-3876706.nearodds-deploy.testnet","unix_time":1793876794}
+{"event":"step_submitting","step":"token: storage_deposit","unix_time":1793876794}
+{"event":"step_submitted","step":"token: storage_deposit","tx_hash":"2Ee9oRGD179FhpkxDKBibyQn5R3mMe8LZY2g2ZwZn9ne","unix_time":1793876795}
+{"event":"step_done","step":"token: storage_deposit","tx_hash":"2Ee9oRGD179FhpkxDKBibyQn5R3mMe8LZY2g2ZwZn9ne","ok":true,"expected_failure":false,"unix_time":1793876798}
+{"event":"step_submitting","step":"token: storage_deposit","unix_time":1793876798}
+{"event":"step_submitted","step":"token: storage_deposit","tx_hash":"4hqSLXCG1yD94ptyNAqc77o2w9cUk4CMkxAJxhuzmFRL","unix_time":1793876799}
+{"event":"step_done","step":"token: storage_deposit","tx_hash":"4hqSLXCG1yD94ptyNAqc77o2w9cUk4CMkxAJxhuzmFRL","ok":true,"expected_failure":false,"unix_time":1793876803}
+{"event":"step_submitting","step":"market: storage_deposit","unix_time":1793876803}
+{"event":"step_submitted","step":"market: storage_deposit","tx_hash":"AXV1tcWnLaDQoBLmefdMR4NkjZNY3sCT5BCtJgKHuvmJ","unix_time":1793876803}
+{"event":"step_done","step":"market: storage_deposit","tx_hash":"AXV1tcWnLaDQoBLmefdMR4NkjZNY3sCT5BCtJgKHuvmJ","ok":true,"expected_failure":false,"unix_time":1793876807}
+{"event":"step_submitting","step":"token: mint (fixture owner)","unix_time":1793876807}
+{"event":"step_submitted","step":"token: mint (fixture owner)","tx_hash":"EPmFGUHJcQp6CuttrYMrdg9YhTLeEwRk6mBa1LtGF9vQ","unix_time":1793876807}

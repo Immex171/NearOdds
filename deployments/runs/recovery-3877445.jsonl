@@ -1,0 +1,10 @@
+{"event":"account_deleting","account":"alice-3876706.nearodds-deploy.testnet","balance":"0.459 NEAR","unix_time":1793877446}
+{"event":"account_deleted","account":"alice-3876706.nearodds-deploy.testnet","tx_hash":"FRkgHyzp2WaWRJa4z8VwtWn3TdtjcnrukvzY4NkHXJjG","unix_time":1793877448}
+{"event":"account_deleting","account":"bob-3876706.nearodds-deploy.testnet","balance":"0.500 NEAR","unix_time":1793877448}
+{"event":"account_deleted","account":"bob-3876706.nearodds-deploy.testnet","tx_hash":"ApWqTKijZf6sVx8u9tWDp6pgChPccunWaiakKVkvZKNM","unix_time":1793877451}
+{"event":"account_deleting","account":"carol-3876706.nearodds-deploy.testnet","balance":"0.500 NEAR","unix_time":1793877451}
+{"event":"account_deleted","account":"carol-3876706.nearodds-deploy.testnet","tx_hash":"HSZg5KAA8HAs3aVRQw1ERP9XXGeCuicpiRJaSnsBzQbB","unix_time":1793877454}
+{"event":"account_deleting","account":"mkt-3876706.nearodds-deploy.testnet","balance":"3.04 NEAR","unix_time":1793877454}
+{"event":"account_deleted","account":"mkt-3876706.nearodds-deploy.testnet","tx_hash":"3tiUpsdMo5RcLfeVR2CmHmQncRmSrk6v6D9exNvzjLV5","unix_time":1793877457}
+{"event":"account_deleting","account":"tok-3876706.nearodds-deploy.testnet","balance":"2.01 NEAR","unix_time":1793877457}
+{"event":"account_deleted","account":"tok-3876706.nearodds-deploy.testnet","tx_hash":"4hVpPXzgMRzjw98dRFVxTyLwzb33NrpNDZ11fj6p2RbU","unix_time":1793877460}

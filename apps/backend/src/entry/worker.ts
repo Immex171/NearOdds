@@ -10,7 +10,10 @@ const { cfg, db, rpc } = boot();
 await migrate(db);
 const workerId = `worker-${randomUUID().slice(0, 8)}`;
 const nd = new Neardata(cfg.neardataUrl, cfg.neardataApiKey);
-const indexer = new Indexer(db, nd);
+// With an API key Neardata allows far more parallel requests; anonymous access is rate limited (429), so stay gentle.
+const concurrency = Number(process.env.NEARDATA_CONCURRENCY ?? (cfg.neardataApiKey ? 8 : 2));
+console.log(`[indexer] neardata ${cfg.neardataUrl}, api key ${cfg.neardataApiKey ? "set" : "NOT set"}, concurrency ${concurrency}`);
+const indexer = new Indexer(db, nd, { concurrency });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let stop = false;
 process.on("SIGINT", () => { stop = true; });
@@ -26,6 +29,10 @@ async function indexLoop() {
     let n = 0;
     try { n = await indexer.step(); } catch (e) { console.error("[indexer]", (e as Error).message); await sleep(5000); }
     const st = await indexer.status().catch(() => null);
+    if (n > 0 || (st && st.catchingUp.length)) {
+      const p = (await db.query("SELECT history_start_height h, indexed_through t FROM markets WHERE history_start_height IS NOT NULL ORDER BY created_at LIMIT 1")).rows[0];
+      console.log(`[indexer] checkpoint ${st?.checkpoint} tip ${st?.tip} lag ${st?.lag}${p ? ` | history scan ${p.t ?? "starting"} of ${st?.checkpoint}` : ""}${st?.openGaps ? ` | open gaps ${st.openGaps}` : ""}`);
+    }
     await beat("indexer", { ...st }).catch(() => {});
     if (st?.checkpoint && !st.catchingUp.length && Date.now() - lastReconcile > 30_000) {
       lastReconcile = Date.now();

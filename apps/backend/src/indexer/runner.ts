@@ -125,7 +125,7 @@ export class Indexer {
   }
 
   /** Markets that need an older range scanned before the live loop may advance. */
-  async catchUpPending(limitBlocks = 2000): Promise<boolean> {
+  async catchUpPending(limitBlocks = 400): Promise<boolean> {
     const cp = await this.checkpoint();
     if (cp === null) return false;
     const r = await this.db.query("SELECT market_ref, contract_id, history_start_height, indexed_through FROM markets WHERE history_start_height IS NOT NULL AND (indexed_through IS NULL OR indexed_through < $1) ORDER BY created_at LIMIT 1", [cp]);
@@ -178,7 +178,7 @@ export class Indexer {
           await this.db.query("INSERT INTO indexer_checkpoints(name, height) VALUES ('main',$1) ON CONFLICT DO NOTHING", [cp]);
         }
         await this.retryGaps();
-        if (await this.catchUpPending()) { await this.refreshCoverage(); this.lastError = null; return 0; }
+        if (await this.catchUpPending()) { await this.refreshCoverage(); this.lastError = null; return 1; }
         let consumed = 0;
         if (cp < tip) {
           const to = Math.min(tip, cp + (this.opts.batch ?? 50));

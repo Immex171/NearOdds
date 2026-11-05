@@ -101,8 +101,9 @@ jobs:
         run: rustup show
       - uses: Swatinem/rust-cache@v2
       # The near-sandbox crate's build script downloads the sandbox node binary the tests start.
+      # (`cargo build -p near-sandbox` panics inside cargo's feature resolver on this toolchain, so build the dependent tests instead.)
       - name: Fetch NEAR Sandbox binary
-        run: cargo build -p near-sandbox
+        run: NEARODDS_SKIP_WASM_BUILD=1 cargo test -p nearodds-market --no-run
 
       - name: Backend tests (PostgreSQL + Sandbox, no skips allowed)
         run: pnpm --filter @nearodds/backend test:ci

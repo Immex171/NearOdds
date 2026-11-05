@@ -44,6 +44,12 @@ export class Rpc {
         throw new RpcUnavailableError(`rpc ${method}: ${causeName ?? name}`);
       throw new RpcError(name ?? "UNKNOWN", causeName, body.error.data ?? body.error.cause, `rpc ${method}: ${body.error.data ?? causeName ?? body.error.message}`);
     }
+    // Some nodes report "does not exist" as a result-level error string instead of an RPC error.
+    const re = body.result?.error;
+    if (method === "query" && typeof re === "string" && /does not exist while viewing/.test(re)) {
+      const cause = /^access key /.test(re) ? "UNKNOWN_ACCESS_KEY" : /^account /.test(re) ? "UNKNOWN_ACCOUNT" : null;
+      if (cause) throw new RpcError("HANDLER_ERROR", cause, re, `rpc ${method}: ${re}`);
+    }
     return body.result as T;
   }
 

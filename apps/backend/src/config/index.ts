@@ -25,7 +25,7 @@ export interface Config {
   tokenOwner: { accountId: string; credentialsFile: string | null };
   artifactsFile: string;
   marketFundingYocto: bigint;
-  faucet: { enabled: boolean; amount: bigint; perAccountLimit: bigint; globalDailyLimit: bigint; nearBudgetYocto: bigint };
+  faucet: { enabled: boolean; tokenId: string | null; cooldownSeconds: number; amount: bigint; perAccountLimit: bigint; globalDailyLimit: bigint; nearBudgetYocto: bigint };
   txPollTimeoutMs: number;
   rpcReadRetries: number;
 }
@@ -52,6 +52,8 @@ export function loadConfig(e: NodeJS.ProcessEnv = env): Config {
     marketFundingYocto: big(e.MARKET_FUNDING_YOCTO, "6000000000000000000000000"),
     faucet: {
       enabled: bool(e.FAUCET_ENABLED, true),
+      tokenId: e.FAUCET_TOKEN_ID || null,
+      cooldownSeconds: Number(e.FAUCET_COOLDOWN_SECONDS ?? 60),
       amount: big(e.FAUCET_AMOUNT, "100000000"),
       perAccountLimit: big(e.FAUCET_PER_ACCOUNT_LIMIT, "300000000"),
       globalDailyLimit: big(e.FAUCET_GLOBAL_DAILY_LIMIT, "10000000000"),

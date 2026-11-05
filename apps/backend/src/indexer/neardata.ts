@@ -11,7 +11,7 @@ export interface NdBlock { block: { header: { height: number; hash: string; time
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class Neardata {
-  constructor(private base: string, private apiKey: string | null = null, private f: typeof fetch = fetch, private retries = 8) {}
+  constructor(private base: string, private apiKey: string | null = null, private f: typeof fetch = fetch, private retries = 8, private baseMs = 1000) {}
   private headers(): Record<string, string> { return this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}; }
 
   private async get(path: string): Promise<Response> {
@@ -20,11 +20,11 @@ export class Neardata {
       try {
         const r = await this.f(this.base + path, { headers: this.headers(), redirect: "follow", signal: AbortSignal.timeout(20000) });
         if (r.status === 401 || r.status === 403) throw new NeardataUnavailableError(`neardata auth required (${r.status}): set NEARDATA_API_KEY`);
-        if (r.status === 429 || r.status >= 500) { last = `http ${r.status}`; await sleep(Math.min(15000, 1000 * 2 ** i) + Math.random() * 500); continue; }
+        if (r.status === 429 || r.status >= 500) { last = `http ${r.status}`; await sleep(Math.min(15000, this.baseMs * 2 ** i) + Math.random() * 500); continue; }
         return r;
       } catch (e) {
         if (e instanceof NeardataUnavailableError) throw e;
-        last = (e as Error).message; await sleep(500 * 2 ** i);
+        last = (e as Error).message; await sleep(this.baseMs * 2 ** i / 2);
       }
     }
     throw new NeardataUnavailableError(`neardata unavailable: ${last}`);

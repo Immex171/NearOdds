@@ -20,3 +20,13 @@ export function buildSigners(cfg: Config, db: Db) {
   return { ks, reg, roles, keyIsolation: sharedKeys.length === 0, sharedKeyRoles: sharedKeys };
 }
 export type Signers = ReturnType<typeof buildSigners>;
+
+/** API-process view: does NOT load keys, only whether a credentials file is configured and present. */
+export function roleStatus(cfg: Config) {
+  const r = (a: { accountId: string; credentialsFile: string | null }) => ({ accountId: a.accountId, available: !!a.credentialsFile && existsSync(a.credentialsFile) });
+  const roles = { deployer: r(cfg.deployer), resolver: r(cfg.resolver), tokenOwner: r(cfg.tokenOwner) };
+  const ids = Object.values(roles).map((x) => x.accountId);
+  const shared = (Object.keys(roles) as Role[]).filter((k) => ids.filter((i) => i === roles[k].accountId).length > 1);
+  return { roles, keyIsolation: shared.length === 0, sharedKeyRoles: shared,
+    note: shared.length ? `Roles ${shared.join(", ")} resolve to the same account; key isolation is NOT provided.` : "Each role uses a distinct account." };
+}

@@ -80,9 +80,37 @@ async fn check_funding<T: Network + 'static>(
     );
 }
 
+/// When set (testnet runs), every created sub-account's key is written to the
+/// credentials directory BEFORE the account is created, so a crashed run can
+/// always be cleaned up and its NEAR recovered.
+static PERSIST_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn save_key(account_id: &str, sk: &SecretKey) {
+    let home = std::env::var("HOME").expect("HOME");
+    let dir = format!("{home}/.near-credentials/testnet");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = format!("{dir}/{account_id}.json");
+    let body = json!({
+        "account_id": account_id,
+        "public_key": sk.public_key().to_string(),
+        "private_key": sk.to_string(),
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 async fn user(parent: &Account, name: &str, milli: u128) -> Account {
+    let sk = SecretKey::from_random(near_workspaces::types::KeyType::ED25519);
+    if PERSIST_KEYS.load(std::sync::atomic::Ordering::SeqCst) {
+        save_key(&format!("{name}.{}", parent.id()), &sk);
+    }
     parent
         .create_subaccount(name)
+        .keys(sk)
         .initial_balance(NearToken::from_millinear(milli))
         .transact()
         .await
@@ -317,15 +345,20 @@ async fn wait_past<T: Network + 'static>(
     ts_ns: u64,
 ) {
     for _ in 0..4000 {
-        if worker.view_block().await.unwrap().timestamp() > ts_ns {
-            return;
+        // The public RPCs rate-limit: treat a failed poll as "not yet" and back off.
+        if let Ok(b) = worker.view_block().await {
+            if b.timestamp() > ts_ns {
+                return;
+            }
+        } else {
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         }
         match fast {
             Some(sb) => {
                 sb.fast_forward(20).await.unwrap();
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             }
-            None => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+            None => tokio::time::sleep(std::time::Duration::from_secs(15)).await,
         }
     }
     panic!("chain time never passed {ts_ns}");
@@ -735,6 +768,15 @@ fn stored_key(account_id: &str) -> Option<SecretKey> {
 
 /// The funded parent. Key: `NEARODDS_TESTNET_PARENT_KEY`, else the stored
 /// credentials file for `NEARODDS_TESTNET_PARENT`.
+/// Testnet worker. `rpc.testnet.near.org` is deprecated and rate-limited, so
+/// default to FastNEAR's public testnet RPC (override with NEARODDS_RPC_URL).
+async fn testnet_worker() -> Worker<near_workspaces::network::Testnet> {
+    PERSIST_KEYS.store(true, std::sync::atomic::Ordering::SeqCst);
+    let url = std::env::var("NEARODDS_RPC_URL")
+        .unwrap_or_else(|_| "https://test.rpc.fastnear.com".to_string());
+    near_workspaces::testnet().rpc_addr(&url).await.unwrap()
+}
+
 fn testnet_parent(worker: &Worker<near_workspaces::network::Testnet>) -> Account {
     let parent_id = std::env::var("NEARODDS_TESTNET_PARENT")
         .expect("set NEARODDS_TESTNET_PARENT to a funded testnet account id");
@@ -802,7 +844,7 @@ async fn demo_on_sandbox() {
 #[tokio::test]
 #[ignore = "needs NEARODDS_TESTNET_PARENT and NEARODDS_TESTNET_PARENT_KEY (funded testnet account)"]
 async fn smoke_on_testnet() {
-    let worker = near_workspaces::testnet().await.unwrap();
+    let worker = testnet_worker().await;
     let parent = testnet_parent(&worker);
     // 10 minutes: enough for ~40 testnet transactions, then the harness waits for the cutoff.
     let cleanup = std::env::var("NEARODDS_SMOKE_CLEANUP")
@@ -815,7 +857,7 @@ async fn smoke_on_testnet() {
 #[tokio::test]
 #[ignore = "needs NEARODDS_TESTNET_PARENT and NEARODDS_TESTNET_PARENT_KEY (funded testnet account)"]
 async fn demo_on_testnet() {
-    let worker = near_workspaces::testnet().await.unwrap();
+    let worker = testnet_worker().await;
     let parent = testnet_parent(&worker);
     let days: u64 = std::env::var("NEARODDS_DEMO_CUTOFF_DAYS")
         .ok()
@@ -843,7 +885,7 @@ async fn demo_on_testnet() {
 #[tokio::test]
 #[ignore = "testnet only: consolidates faucet funds into NEARODDS_TESTNET_PARENT"]
 async fn consolidate_funds_on_testnet() {
-    let worker = near_workspaces::testnet().await.unwrap();
+    let worker = testnet_worker().await;
     let parent = testnet_parent(&worker);
     for from in std::env::var("NEARODDS_FUND_FROM")
         .unwrap_or_default()
@@ -870,4 +912,165 @@ async fn consolidate_funds_on_testnet() {
     }
     let total = worker.view_account(parent.id()).await.unwrap().balance;
     println!("parent {} balance: {total}", parent.id());
+}
+
+/// Recovery: deletes sub-accounts left behind by an interrupted run (keys were
+/// persisted by `user`) and returns their NEAR to the parent.
+/// NEARODDS_DELETE_ACCOUNTS="tok-1.parent.testnet,mkt-1.parent.testnet,..."
+#[tokio::test]
+#[ignore = "testnet only: deletes the listed sub-accounts into NEARODDS_TESTNET_PARENT"]
+async fn delete_testnet_accounts() {
+    let worker = testnet_worker().await;
+    let parent = testnet_parent(&worker);
+    for id in std::env::var("NEARODDS_DELETE_ACCOUNTS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+    {
+        let id = id.trim();
+        let acct = Account::from_secret_key(
+            id.parse().unwrap(),
+            stored_key(id).unwrap_or_else(|| panic!("no stored key for {id}")),
+            &worker,
+        );
+        let r = acct.delete_account(parent.id()).await.unwrap();
+        println!(
+            "deleted {id} -> {} (tx {})",
+            parent.id(),
+            r.outcome().transaction_hash
+        );
+    }
+    let total = worker.view_account(parent.id()).await.unwrap().balance;
+    println!("parent {} balance: {total}", parent.id());
+}
+
+/// Funds wallets with TEST collateral. The parent is the fixture owner.
+/// NEARODDS_TOKEN=<token account>  NEARODDS_MINT="a.testnet:100,b.testnet:50" (whole tokens).
+/// Registers each account with the token first if needed.
+#[tokio::test]
+#[ignore = "testnet only: mints test collateral as the token owner (NEARODDS_TESTNET_PARENT)"]
+async fn mint_on_testnet() {
+    let worker = testnet_worker().await;
+    let parent = testnet_parent(&worker);
+    let token: near_workspaces::AccountId = std::env::var("NEARODDS_TOKEN")
+        .expect("set NEARODDS_TOKEN")
+        .parse()
+        .unwrap();
+    for entry in std::env::var("NEARODDS_MINT")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+    {
+        let (who, whole) = entry
+            .split_once(':')
+            .expect("NEARODDS_MINT entries look like account:tokens");
+        let (who, whole): (near_workspaces::AccountId, u128) =
+            (who.trim().parse().unwrap(), whole.trim().parse().unwrap());
+        let reg: Value = worker
+            .view(&token, "storage_balance_of")
+            .args_json(json!({ "account_id": who }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+        if reg.is_null() {
+            let r = parent
+                .call(&token, "storage_deposit")
+                .args_json(json!({ "account_id": who, "registration_only": true }))
+                .deposit(NearToken::from_millinear(10))
+                .transact()
+                .await
+                .unwrap();
+            println!(
+                "registered {who} with the token (tx {})",
+                r.outcome().transaction_hash
+            );
+            assert!(r.is_success());
+        }
+        let r = parent
+            .call(&token, "mint")
+            .args_json(json!({ "account_id": who, "amount": (whole * ONE).to_string() }))
+            .transact()
+            .await
+            .unwrap();
+        println!(
+            "minted {whole} tNOC to {who} (tx {})",
+            r.outcome().transaction_hash
+        );
+        assert!(
+            r.is_success() && r.receipt_failures().is_empty(),
+            "{:#?}",
+            r.failures()
+        );
+        let bal: String = worker
+            .view(&token, "ft_balance_of")
+            .args_json(json!({ "account_id": who }))
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+        println!("  {who} token balance: {bal} base units");
+    }
+}
+
+/// Resolves a market as the resolver (the parent) after its cutoff.
+/// NEARODDS_MARKET=<market account>  NEARODDS_OUTCOME=Yes|No  NEARODDS_EVIDENCE="<url or note>"
+#[tokio::test]
+#[ignore = "testnet only: resolves a market as NEARODDS_TESTNET_PARENT (the configured resolver)"]
+async fn resolve_on_testnet() {
+    let worker = testnet_worker().await;
+    let parent = testnet_parent(&worker);
+    let market: near_workspaces::AccountId = std::env::var("NEARODDS_MARKET")
+        .expect("set NEARODDS_MARKET")
+        .parse()
+        .unwrap();
+    let outcome = std::env::var("NEARODDS_OUTCOME").expect("set NEARODDS_OUTCOME=Yes|No");
+    assert!(outcome == "Yes" || outcome == "No");
+    let evidence = std::env::var("NEARODDS_EVIDENCE").expect("set NEARODDS_EVIDENCE");
+    let m: Value = worker
+        .view(&market, "get_market")
+        .args_json(json!({ "market_id": MID }))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    println!(
+        "before: status={} resolver={}",
+        m["status"], m["resolver_id"]
+    );
+    assert_eq!(
+        m["resolver_id"],
+        parent.id().to_string(),
+        "the parent is not this market's resolver"
+    );
+    assert_eq!(
+        m["status"], "AwaitingResolution",
+        "can only resolve after the cutoff, once"
+    );
+    let r = parent
+        .call(&market, "resolve_market")
+        .args_json(json!({ "market_id": MID, "outcome": outcome, "evidence": evidence }))
+        .deposit(YOCTO)
+        .gas(Gas::from_tgas(100))
+        .transact()
+        .await
+        .unwrap();
+    println!("resolve_market tx {}", r.outcome().transaction_hash);
+    assert!(
+        r.is_success() && r.receipt_failures().is_empty(),
+        "{:#?}",
+        r.failures()
+    );
+    let m: Value = worker
+        .view(&market, "get_market")
+        .args_json(json!({ "market_id": MID }))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    println!(
+        "after: status={} resolution={}",
+        m["status"], m["resolution"]
+    );
+    assert_eq!(m["status"], "Resolved");
 }

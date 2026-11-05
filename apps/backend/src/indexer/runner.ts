@@ -103,6 +103,8 @@ async function withIndexLock<T>(db: Db, wait: boolean, fn: () => Promise<T>): Pr
 
 export class Indexer {
   lastError: string | null = null;
+  /** true when another worker currently holds the single indexing lock */
+  lockBusy = false;
   constructor(private db: Db, private nd: Neardata, private opts: { batch?: number; concurrency?: number; startHeight?: number } = {}) {}
 
   async checkpoint(): Promise<number | null> {
@@ -202,6 +204,7 @@ export class Indexer {
         return consumed;
       } catch (e) { this.lastError = (e as Error).message; throw e; }
     });
+    this.lockBusy = r === null;
     return r ?? 0;
   }
 

@@ -29,7 +29,8 @@ async function indexLoop() {
     let n = 0;
     try { n = await indexer.step(); } catch (e) { console.error("[indexer]", (e as Error).message); await sleep(5000); }
     const st = await indexer.status().catch(() => null);
-    if (n > 0 || (st && st.catchingUp.length)) {
+    if (indexer.lockBusy) { console.log("[indexer] another worker process holds the indexing lock; this one is waiting. Stop the other worker(s): pgrep -fa entry/worker.ts"); await sleep(10000); }
+    else if (n > 0 || (st && st.catchingUp.length)) {
       const p = (await db.query("SELECT history_start_height h, indexed_through t FROM markets WHERE history_start_height IS NOT NULL ORDER BY created_at LIMIT 1")).rows[0];
       console.log(`[indexer] checkpoint ${st?.checkpoint} tip ${st?.tip} lag ${st?.lag}${p ? ` | history scan ${p.t ?? "starting"} of ${st?.checkpoint}` : ""}${st?.openGaps ? ` | open gaps ${st.openGaps}` : ""}`);
     }

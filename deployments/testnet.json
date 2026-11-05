@@ -1,0 +1,437 @@
+{
+  "kind": "smoke-test (market is RESOLVED; do not use for the frontend)",
+  "network": "Testnet",
+  "parent_account_token_owner_and_resolver": "nearodds-deploy.testnet",
+  "git_commit": "462871b463539aee5a9374eddb92b6a3e71b9e2a",
+  "git_dirty": false,
+  "accounts": {
+    "market": "mkt-3879067.nearodds-deploy.testnet",
+    "token": "tok-3879067.nearodds-deploy.testnet",
+    "alice": "alice-3879067.nearodds-deploy.testnet",
+    "bob": "bob-3879067.nearodds-deploy.testnet",
+    "carol": "carol-3879067.nearodds-deploy.testnet"
+  },
+  "market_id": "mkt-1",
+  "split_cutoff_ns": "1793879666622184971",
+  "token_metadata": {
+    "spec": "ft-1.0.0",
+    "name": "NearOdds TEST Collateral (no value)",
+    "symbol": "tNOC",
+    "icon": null,
+    "reference": null,
+    "reference_hash": null,
+    "decimals": 6
+  },
+  "config": {
+    "schema_version": 3,
+    "collateral_token_id": "tok-3879067.nearodds-deploy.testnet",
+    "resolver_id": "nearodds-deploy.testnet",
+    "resolution_model": "manual-trusted-resolver: one configured account sets a final YES or NO after the cutoff; VOID and disputes are not supported",
+    "market_id": "mkt-1",
+    "deposit_msg": "deposit",
+    "decimals": 6,
+    "storage_cost_per_account": "40960000000000000000000",
+    "trading": {
+      "price_scale": "1000000",
+      "price_tick": "10000",
+      "min_price": "10000",
+      "max_price": "990000",
+      "quantity_lot": "100",
+      "min_order_quantity": "10000",
+      "max_open_offers_per_account": 10,
+      "fee_bps": 0
+    }
+  },
+  "artifacts": {
+    "market_wasm": {
+      "sha256_hex": "b41ea88129be572c3f3c48e4fcaec31afa12aca4d49c97cf237bea88f4f22d45",
+      "code_hash_base58": "D87VzcAmR32hXwqUcwZfRvrC7HLHXREoSTjmsHwsezon",
+      "bytes": 236408
+    },
+    "token_wasm": {
+      "sha256_hex": "26e81178403522a377ff4039c75923e95bbc0341aa1ae767699910532da25ddf",
+      "code_hash_base58": "3csjd1rDuCq3vtAcffZbsawyKRQuT8y2GMDmPhbdQV98",
+      "bytes": 151472
+    },
+    "onchain_code_hashes_match_artifacts": true
+  },
+  "onchain_contract_state": {
+    "market": "LocalHash(D87VzcAmR32hXwqUcwZfRvrC7HLHXREoSTjmsHwsezon)",
+    "token": "LocalHash(3csjd1rDuCq3vtAcffZbsawyKRQuT8y2GMDmPhbdQV98)"
+  },
+  "steps": [
+    {
+      "step": "token: deploy + init (one tx)",
+      "tx_hash": "BFwYtnKZ9jEkXnH9Q1zLooAvC2VsLVAFrzz6ciD18LLF",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: deploy + init (one tx)",
+      "tx_hash": "5317hx5mPPjUC4b88vc5ppuQjdHbJKmtmb5rHkuhsKz1",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "6B3G7w8hr4M3DT7aqcdB6Zb4LpydpP6tTF36hpEdMZGc",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "8gJ162SxbEfDeDgKTtuHoMh1sU4sAW36KCRveKB9yD2L",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: storage_deposit",
+      "tx_hash": "HehP5hG25Zan22cyAHmPnNr4m2S8P7WDizH5CdSyh146",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: mint (fixture owner)",
+      "tx_hash": "Fg6m3uF95zynowT8jZ3GSXTnAMTNzniFKqu3JBcjxxzC",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "AXKf9gadTvBbVKf3xkBcsyvZYACaSFbJPgPZjzFTk8zU",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: storage_deposit",
+      "tx_hash": "gKiJZbsakPf7sPFwfxp4EYcaMC2cFjC6ncA3PeMaZjd",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: mint (fixture owner)",
+      "tx_hash": "2iY21HsHaavLqd2Tzm2qsrg6XuY3VTeY4iYvmVh4MPmo",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "3ve5Ktak2vdc71DFGC9dmYyR5xZ9M39Ctj5RJVChyHjd",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: storage_deposit",
+      "tx_hash": "7EAzGsAjWNWvXJrcTY3isthzYiAGEXmo3dWe8x5VnT4m",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: mint (fixture owner)",
+      "tx_hash": "NoGPaYfRcPGniNKFtWEFrbqvPyGacSLMX6rDKG9YPWh",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "deposit (ft_transfer_call)",
+      "tx_hash": "6ertCAbeiLx5u8vZLwEZTHsxaFCrHUWWPRNfWszPRpkx",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "deposit (ft_transfer_call)",
+      "tx_hash": "DXh253v7VoCetQYaEs3hdNMV3yGUCKCRikm6e5W5Z5ue",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "deposit (ft_transfer_call)",
+      "tx_hash": "CkhFEM3PQYPdEWuNKXCUxD7MTwK2pPq1XvXnnqMCqchB",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "alice: split 100",
+      "tx_hash": "8ft2pRn8ML4Pg8fpJrq8kLpNHeDAetUK23LLWiggRfSN",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "alice: create_offer 20 YES @0.60",
+      "tx_hash": "4aioaxrhSB2Eoyc2Bu3FoUfSgWWAGov9j5xnmKjiTSVe",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "bob: fill 8",
+      "tx_hash": "6pjpSiYNP2D1RhF3t99Dj8nSqx7BdTeCC5UWcVMV73MQ",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "carol: fill 5",
+      "tx_hash": "GNyZjcAaieFh9tPbrHGDnmvJHnXp7xGfJvB7K1TY1eN8",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "alice: cancel remainder (7)",
+      "tx_hash": "AfG58cRP6ngFQUG1ZbyCQVpMAtguZ7dKYZjkdJJxGR89",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "bob: resell offer 3 YES @0.70",
+      "tx_hash": "2MqbjywFtn2SGsVkDmZ4MGtcYpU9wqVfPGJ84h2hdwMo",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "carol: fill resale 3",
+      "tx_hash": "A8jBjK86tXVTsyHd7RaNymcRcWo1nAPLcdMwwC76hXwG",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "resolver: resolve before the cutoff (refused)",
+      "tx_hash": "EkTwY4GeZCQXZbconrYHZc1Z9qY1VVVaVTmrcbK5VXdk",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "alice: resolve as a non-resolver (refused)",
+      "tx_hash": "ShuxCnQhdv7kv8Y1dAmay72aRsSiH3Xz7BcQpiTgLqS",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "resolver: resolve YES",
+      "tx_hash": "7dhetiSQkhaQa8xVjiKwrdZszqf34jXWGTSn9b7tagUZ",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "resolver: resolve again (refused)",
+      "tx_hash": "ZpJFb6WHp2hvVLRZ7WSYMFdipGdgaZouaGkpwa6aaEG",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "bob: split after resolution (refused)",
+      "tx_hash": "6hFegtgge26LyETMPu2m6KGczRadcGTs2puDrxBJGMiF",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "alice: merge after resolution (refused)",
+      "tx_hash": "4Avrx8RV2oVmGTtYjA3Qd4YeCeU4mBYNK17JWLXw64LP",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "alice: create_offer after resolution (refused)",
+      "tx_hash": "8Ct7ayCR18nPbgZ32KEjqQ3krRmJXDYNaB4pytRdFq9F",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "carol: redeem",
+      "tx_hash": "CbedEWdwjLc5AxCQZB3K4HzGZHNZG2roTsXWdmu9QUAx",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "alice: redeem",
+      "tx_hash": "FVStiG3LLsuYd8rfg1VtinqFyRY7Ryv6nohrPHWMXtoG",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "bob: redeem",
+      "tx_hash": "DNEgnaysPNz8KAGt7y5hhxUZ3MQ5Wsc8Y5EhZ9ZFgdTX",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "alice: redeem again (refused)",
+      "tx_hash": "H4cVgnuJBqh7pXfKU5EpJV3pTkt1RUu46g9QRd24BANH",
+      "succeeded": true,
+      "expected_failure": true
+    },
+    {
+      "step": "alice: withdraw",
+      "tx_hash": "7jePoUEZUTnrWYxEc9VGmjRUpCvPaNy7fr7hcjYy4jhE",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "bob: withdraw",
+      "tx_hash": "7SNqWk9Bp31LMTHqJxsEYYUTYgd7BAikcq2hFE9sHgue",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "carol: withdraw",
+      "tx_hash": "A1PUxyRY14vDNTc7PTZf4T9wpdHWTj9iEqvRRLs5LsHx",
+      "succeeded": true,
+      "expected_failure": false
+    }
+  ],
+  "final_state_before_cleanup": {
+    "market_token_balance": "0",
+    "market_totals": {
+      "available_collateral": "0",
+      "market_backing": "0",
+      "outstanding_yes": "0",
+      "outstanding_no": "0",
+      "pending_withdrawals": "0",
+      "registered_accounts": "3",
+      "reserved_collateral": "0",
+      "reserved_yes": "0",
+      "reserved_no": "0",
+      "open_offers": "0",
+      "settled_escrow_requirement": "0"
+    },
+    "market": {
+      "market_id": "mkt-1",
+      "question": "Will it rain in Lagos on 2026-12-01? (smoke-test market)",
+      "rules": "Smoke-test market. Resolves YES if the NiMet daily report records measurable rain, otherwise NO. A trusted resolver sets the result; there is no VOID or dispute path.",
+      "split_cutoff_ns": "1793879666622184971",
+      "split_open": false,
+      "trading_cutoff_ns": "1793879666622184971",
+      "trading_open": false,
+      "status": "Resolved",
+      "awaiting_resolution": false,
+      "resolved": true,
+      "merge_open": false,
+      "resolver_id": "nearodds-deploy.testnet",
+      "resolution_source": "NiMet daily weather report, Lagos (smoke test)",
+      "resolution": {
+        "outcome": "Yes",
+        "resolver_id": "nearodds-deploy.testnet",
+        "resolved_at_ns": "1793879682282141425",
+        "evidence": "https://nimet.example/report (smoke test, no real source)"
+      },
+      "collateral_token_id": "tok-3879067.nearodds-deploy.testnet",
+      "outstanding_yes": "0",
+      "outstanding_no": "0",
+      "market_backing": "0"
+    },
+    "alice": {
+      "internal_account": {
+        "account_id": "alice-3879067.nearodds-deploy.testnet",
+        "storage_deposit": "40960000000000000000000",
+        "available_collateral": "0",
+        "reserved_collateral": "0",
+        "yes": "0",
+        "no": "0",
+        "reserved_yes": "0",
+        "reserved_no": "0",
+        "open_offer_ids": [],
+        "pending_withdrawal": {
+          "withdrawal_id": "1",
+          "receiver_id": null,
+          "amount": "94800000",
+          "status": "Completed"
+        }
+      },
+      "token_wallet_balance": "94800000",
+      "last_withdrawal": {
+        "withdrawal_id": "1",
+        "receiver_id": null,
+        "amount": "94800000",
+        "status": "Completed"
+      }
+    },
+    "bob": {
+      "internal_account": {
+        "account_id": "bob-3879067.nearodds-deploy.testnet",
+        "storage_deposit": "40960000000000000000000",
+        "available_collateral": "0",
+        "reserved_collateral": "0",
+        "yes": "0",
+        "no": "0",
+        "reserved_yes": "0",
+        "reserved_no": "0",
+        "open_offer_ids": [],
+        "pending_withdrawal": {
+          "withdrawal_id": "2",
+          "receiver_id": null,
+          "amount": "12300000",
+          "status": "Completed"
+        }
+      },
+      "token_wallet_balance": "12300000",
+      "last_withdrawal": {
+        "withdrawal_id": "2",
+        "receiver_id": null,
+        "amount": "12300000",
+        "status": "Completed"
+      }
+    },
+    "carol": {
+      "internal_account": {
+        "account_id": "carol-3879067.nearodds-deploy.testnet",
+        "storage_deposit": "40960000000000000000000",
+        "available_collateral": "0",
+        "reserved_collateral": "0",
+        "yes": "0",
+        "no": "0",
+        "reserved_yes": "0",
+        "reserved_no": "0",
+        "open_offer_ids": [],
+        "pending_withdrawal": {
+          "withdrawal_id": "3",
+          "receiver_id": null,
+          "amount": "12900000",
+          "status": "Completed"
+        }
+      },
+      "token_wallet_balance": "12900000",
+      "last_withdrawal": {
+        "withdrawal_id": "3",
+        "receiver_id": null,
+        "amount": "12900000",
+        "status": "Completed"
+      }
+    }
+  },
+  "verified": true,
+  "cleanup": {
+    "status": "deleted after verification; kept only as historical test evidence (explorer history remains)",
+    "accounts_deleted": [
+      "alice-3879067.nearodds-deploy.testnet",
+      "bob-3879067.nearodds-deploy.testnet",
+      "carol-3879067.nearodds-deploy.testnet",
+      "mkt-3879067.nearodds-deploy.testnet",
+      "tok-3879067.nearodds-deploy.testnet"
+    ],
+    "per_account": [
+      {
+        "account": "alice-3879067.nearodds-deploy.testnet",
+        "balance_before_delete": "0.456 NEAR"
+      },
+      {
+        "account": "bob-3879067.nearodds-deploy.testnet",
+        "balance_before_delete": "0.457 NEAR"
+      },
+      {
+        "account": "carol-3879067.nearodds-deploy.testnet",
+        "balance_before_delete": "0.457 NEAR"
+      },
+      {
+        "account": "mkt-3879067.nearodds-deploy.testnet",
+        "balance_before_delete": "3.13 NEAR"
+      },
+      {
+        "account": "tok-3879067.nearodds-deploy.testnet",
+        "balance_before_delete": "2.01 NEAR"
+      }
+    ],
+    "beneficiary": "nearodds-deploy.testnet",
+    "held_by_deleted_accounts": "6.50 NEAR",
+    "returned_to_beneficiary": "6.50 NEAR",
+    "parent_balance_before_cleanup": "6.63 NEAR",
+    "parent_balance_after_cleanup": "13.12 NEAR"
+  }
+}

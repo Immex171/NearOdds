@@ -61,8 +61,10 @@ design and is not part of this milestone.
 
 ## Testnet deployment
 
-Not performed yet (no funded testnet account is configured). The reproducible procedure,
-prerequisites and the smoke test are in `docs/testnet.md`: `bash scripts/testnet-smoke.sh`.
+Deployed and verified on NEAR testnet (2026-11-05): a full-lifecycle smoke test (record: `deployments/testnet.json`,
+its accounts deleted afterwards) and a persistent open demo market for the frontend (`deployments/testnet-demo.json`,
+cutoff 2026-11-11T23:00:00Z). Frontend: read IDs from `deployments/testnet-demo.json` and see
+`docs/frontend-handoff.md`. Evidence, transaction hashes and the harness's safety rules: `docs/testnet.md`.
 
 ## Dependency versions (Cargo.lock)
 

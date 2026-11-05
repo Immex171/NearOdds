@@ -1,0 +1,266 @@
+{
+  "kind": "persistent OPEN demo market for the frontend",
+  "network": "Testnet",
+  "parent_account_token_owner_and_resolver": "nearodds-deploy.testnet",
+  "git_commit": "462871b463539aee5a9374eddb92b6a3e71b9e2a",
+  "git_dirty": false,
+  "accounts": {
+    "market": "mkt-demo-3879869.nearodds-deploy.testnet",
+    "token": "tok-demo-3879869.nearodds-deploy.testnet",
+    "resolver_and_token_owner": "nearodds-deploy.testnet",
+    "liquidity_provider": "lp-demo-3879869.nearodds-deploy.testnet",
+    "probe_trader": "probe-demo-3879869.nearodds-deploy.testnet",
+    "minted_demo_users": []
+  },
+  "market_id": "mkt-1",
+  "split_cutoff_ns": "1794438000000000000",
+  "token_metadata": {
+    "spec": "ft-1.0.0",
+    "name": "NearOdds TEST Collateral (no value)",
+    "symbol": "tNOC",
+    "icon": null,
+    "reference": null,
+    "reference_hash": null,
+    "decimals": 6
+  },
+  "config": {
+    "schema_version": 3,
+    "collateral_token_id": "tok-demo-3879869.nearodds-deploy.testnet",
+    "resolver_id": "nearodds-deploy.testnet",
+    "resolution_model": "manual-trusted-resolver: one configured account sets a final YES or NO after the cutoff; VOID and disputes are not supported",
+    "market_id": "mkt-1",
+    "deposit_msg": "deposit",
+    "decimals": 6,
+    "storage_cost_per_account": "40960000000000000000000",
+    "trading": {
+      "price_scale": "1000000",
+      "price_tick": "10000",
+      "min_price": "10000",
+      "max_price": "990000",
+      "quantity_lot": "100",
+      "min_order_quantity": "10000",
+      "max_open_offers_per_account": 10,
+      "fee_bps": 0
+    }
+  },
+  "artifacts": {
+    "market_wasm": {
+      "sha256_hex": "b41ea88129be572c3f3c48e4fcaec31afa12aca4d49c97cf237bea88f4f22d45",
+      "code_hash_base58": "D87VzcAmR32hXwqUcwZfRvrC7HLHXREoSTjmsHwsezon",
+      "bytes": 236408
+    },
+    "token_wasm": {
+      "sha256_hex": "26e81178403522a377ff4039c75923e95bbc0341aa1ae767699910532da25ddf",
+      "code_hash_base58": "3csjd1rDuCq3vtAcffZbsawyKRQuT8y2GMDmPhbdQV98",
+      "bytes": 151472
+    },
+    "onchain_code_hashes_match_artifacts": true
+  },
+  "onchain_contract_state": {
+    "market": "LocalHash(D87VzcAmR32hXwqUcwZfRvrC7HLHXREoSTjmsHwsezon)",
+    "token": "LocalHash(3csjd1rDuCq3vtAcffZbsawyKRQuT8y2GMDmPhbdQV98)"
+  },
+  "steps": [
+    {
+      "step": "token: deploy + init (one tx)",
+      "tx_hash": "9AceRBKh7H1YUw2hCsSeYmwrgb7nUhxbkDZJULr7as9Q",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: deploy + init (one tx)",
+      "tx_hash": "ETTdN6B8aLTsvMrxoteokVkafsxCUaiunSMKjZ9u99U1",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "CC2AuLDVgyLegUzHBbxSfGU7PopjMKrZ9H7DpbBdML9B",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "2rK9paG8rhD5wGejMPj8dU4BVFp42buSzzJateByxqQC",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: storage_deposit",
+      "tx_hash": "EkpuUAVDXoyuFJQGRYyjWj4PgcXqjsntnJrPQKHLEBCC",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: mint (fixture owner)",
+      "tx_hash": "6jWzEg5mjEtXZ1yHwKButJ9Dq29L5Qbv5G1rbd8GJKmP",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "deposit (ft_transfer_call)",
+      "tx_hash": "DD5kT6QUJ8qy3f6yeW3bNeM6MvZDKK4viUp4LiSYLxL9",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: split 100",
+      "tx_hash": "HDJLAPjHHibP51wmXgkLgx5LHLhJiLDmHpyzCrKBkuzJ",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Sell 10 Yes @0.65",
+      "tx_hash": "4FanRtXB7e8JJN6v1LSm6GT6uvgaFVARaTennr4zs8BM",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Sell 10 Yes @0.7",
+      "tx_hash": "5NqRzd14ymnWeCr6KTWQt9sCoktdTyifJV3V61cqX2x1",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Sell 10 Yes @0.75",
+      "tx_hash": "Bf7FBcrrw8CbkjAgXbVDGTX9RKWEt19zTaUnZutKosha",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Sell 10 No @0.35",
+      "tx_hash": "3HKT7dYFL7ncHG9XN1YMvoV3wasJTqxJH8dEQHvn9srV",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Sell 10 No @0.4",
+      "tx_hash": "Ez8FgJEVPPmkH1YNH42APfaz8AQKikpdoypczvx9pzDq",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Buy 10 Yes @0.55",
+      "tx_hash": "7wvqzew7VxE3MoWxATFi8muweNBXLBfsv4dNSHJiTjhV",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "lp: Buy 10 Yes @0.5",
+      "tx_hash": "7mzydoJ1woq2dezKTHkgrBbvTHrkXU4ibZb9eE5KPpvn",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: storage_deposit",
+      "tx_hash": "2wRenTZCPSDTubDc5vGQtSWyvmujgNG8bKTsWgeLAJaf",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "market: storage_deposit",
+      "tx_hash": "HTUhCqNAvSB1yXNpXkHS77i75H9hPb9WgfKMP9UY1R71",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "token: mint (fixture owner)",
+      "tx_hash": "4LjvL2nRkGAy3LhUDHojdA3XmuYyXPSo8inoMnfvaJzH",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "deposit (ft_transfer_call)",
+      "tx_hash": "8kQ7NjMo5kuPayr9U82koUqvqPU2FeZKDtDpGnv1v9rw",
+      "succeeded": true,
+      "expected_failure": false
+    },
+    {
+      "step": "probe: fill 0.0001 of the first YES sell offer",
+      "tx_hash": "CvpvdFJPKjDoVrEtkco82HUyrnzZ4sTR9nxRHccXfooQ",
+      "succeeded": true,
+      "expected_failure": false
+    }
+  ],
+  "market_terms": {
+    "question": "Will it rain in Lagos on 2026-11-12?",
+    "rules": "Observation period: the Lagos calendar day 2026-11-12, 00:00 to 24:00 WAT (UTC+1). Resolves YES if the NiMet daily weather report for Lagos for 2026-11-12 records measurable rain, otherwise NO. Trading closes at the start of that day, 00:00 WAT = 2026-11-11T23:00:00Z. A trusted resolver (the market's resolver_id) sets the final result once, after the cutoff and after the NiMet report is published. There is no VOID or dispute path.",
+    "resolution_source": "NiMet daily weather report, Lagos, 2026-11-12",
+    "observation_date": "2026-11-12",
+    "observation_window": "2026-11-12 00:00-24:00 WAT (UTC+1)",
+    "split_cutoff_ns": "1794438000000000000",
+    "split_cutoff_utc": "2026-11-11T23:00:00Z",
+    "resolve_after": "the cutoff, once the NiMet report for the observation date is published"
+  },
+  "seeded_offers": [
+    {
+      "offer_id": "4",
+      "outcome": "Yes",
+      "side": "Sell",
+      "price": "650000",
+      "quantity": "10000000"
+    },
+    {
+      "offer_id": "8",
+      "outcome": "Yes",
+      "side": "Sell",
+      "price": "700000",
+      "quantity": "10000000"
+    },
+    {
+      "offer_id": "12",
+      "outcome": "Yes",
+      "side": "Sell",
+      "price": "750000",
+      "quantity": "10000000"
+    },
+    {
+      "offer_id": "18",
+      "outcome": "No",
+      "side": "Sell",
+      "price": "350000",
+      "quantity": "10000000"
+    },
+    {
+      "offer_id": "22",
+      "outcome": "No",
+      "side": "Sell",
+      "price": "400000",
+      "quantity": "10000000"
+    },
+    {
+      "offer_id": "25",
+      "outcome": "Yes",
+      "side": "Buy",
+      "price": "550000",
+      "quantity": "10000000"
+    },
+    {
+      "offer_id": "29",
+      "outcome": "Yes",
+      "side": "Buy",
+      "price": "500000",
+      "quantity": "10000000"
+    }
+  ],
+  "probe_fill": {
+    "offer_id": "4",
+    "quantity": "100",
+    "collateral_amount": "65",
+    "remaining_quantity": "9999900",
+    "status": "PartiallyFilled"
+  },
+  "frontend": {
+    "read_ids_from": "this file (accounts.market, accounts.token, market_id)",
+    "token_symbol_decimals_note": "read ft_metadata from the token contract instead of hardcoding",
+    "registration": {
+      "token_storage_deposit_yocto": "1250000000000000000000",
+      "market_storage_deposit_yocto": "40960000000000000000000"
+    },
+    "tested_gas": {
+      "ft_transfer_call": "300 Tgas",
+      "market_calls": "100 Tgas"
+    }
+  },
+  "verified": true
+}

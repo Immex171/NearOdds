@@ -4,10 +4,12 @@ import type { Market } from "@/lib/types";
 
 export function ResolutionRules({ m }: { m: Market }) {
   const r = m.resolution;
+  const obs = r.observation ?? { at: null, text: "As defined in the rules" };
+  const src = typeof r.source === "string" ? { name: r.source, field: "" } : r.source ?? { name: "Not provided", field: "" };
   const rows: [string, React.ReactNode][] = [
     ["Trading closes", <>{dateTimeUtc(m.closesAt)}<span className="block text-xs text-mute">Last moment users can trade.</span></>],
-    ["Price observation", <>{r.observation.at ? dateTimeUtc(r.observation.at) : "No single instant"}<span className="block text-xs text-mute">{r.observation.text}</span></>],
-    ["Resolution source", <>{r.source.name}<span className="block text-xs text-mute">{r.source.field}</span></>],
+    ["Price observation", <>{obs.at ? dateTimeUtc(obs.at) : "No single instant"}<span className="block text-xs text-mute">{obs.text}</span></>],
+    ["Resolution source", <>{src.name}<span className="block text-xs text-mute">{src.field}</span></>],
     ["Resolver", r.resolver],
     ["Status", r.outcome ? `${statusLabel[m.status]}: ${r.outcome}` : statusLabel[m.status]],
   ];

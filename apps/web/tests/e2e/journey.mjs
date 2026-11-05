@@ -62,6 +62,17 @@ async function desktop() {
   await page.waitForURL(/\/markets\/fed-dec-cut/);
   check("search opens the market via keyboard", true);
 
+  // Regression: saved demo state from an older shape must not crash the market page
+  await page.evaluate(() => {
+    const old = { markets: [{ id: "near-10-dec", resolution: { yesWins: "x", noWins: "y", source: "CoinGecko" } }], book: [], mine: [], positions: [], extra: [] };
+    localStorage.setItem("nearodds:demo-state:v1", JSON.stringify(old));
+    localStorage.setItem("nearodds:demo-state:v2", JSON.stringify(old));
+  });
+  const errsBefore = errors.length;
+  await page.goto(`${BASE}/markets/near-10-dec`);
+  await page.getByRole("region", { name: "Rules" }).waitFor();
+  check("stale saved demo state is discarded and the rules render", /Price observation/.test(await page.getByRole("region", { name: "Rules" }).innerText()) && errors.length === errsBefore, errors.slice(errsBefore).join(" | "));
+
   // ---- Ticket presentations while disconnected ----
   const ticket = page.getByRole("region", { name: "Trade", exact: true });
   const height = () => ticket.evaluate((e) => Math.round(e.getBoundingClientRect().height));

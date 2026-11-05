@@ -34,13 +34,17 @@ function initial(): State {
   };
 }
 
-const KEY = "nearodds:demo-state:v1";
+const KEY = "nearodds:demo-state:v2"; // bump when the persisted shape changes
+const OLD_KEYS = ["nearodds:demo-state:v1"];
 const enc = (s: State) => JSON.stringify({ ...s, extra: [...s.extra] }, (_k, v) => (typeof v === "bigint" ? { $b: v.toString() } : v));
 function load(): State | null {
   try {
+    if (typeof localStorage !== "undefined") OLD_KEYS.forEach((k) => localStorage.removeItem(k));
     const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(KEY);
     if (!raw) return null;
     const o = JSON.parse(raw, (_k, v) => (v && typeof v === "object" && "$b" in v ? BigInt(v.$b) : v));
+    // Discard saved state from an older shape instead of crashing on it.
+    if (!Array.isArray(o.markets) || o.markets.some((m: Market) => !m?.resolution?.observation || !m.resolution.source?.name)) return null;
     return { ...o, extra: new Map(o.extra) } as State;
   } catch { return null; }
 }

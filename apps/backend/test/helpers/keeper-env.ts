@@ -1,4 +1,5 @@
-import { mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../../src/config/index.js";
@@ -9,7 +10,7 @@ import type { Db } from "../../src/db/index.js";
 import { TestChain, writeCreds } from "./chain.js";
 import type { Sandbox } from "./sandbox.js";
 import type { SigningKey } from "../../src/near/keystore.js";
-import { REPO } from "./sandbox.js";
+import { MARKET_WASM, REPO } from "./sandbox.js";
 
 export function lagosTemplate(deployer: string, token: string, over: Record<string, unknown> = {}) {
   return {
@@ -32,11 +33,15 @@ export function lagosTemplate(deployer: string, token: string, over: Record<stri
 export async function keeperEnv(sbx: Sandbox, db: Db, chain: TestChain, deployer: SigningKey, secret: string, token: string) {
   const ks = mkdtempSync(join(tmpdir(), "nearodds-ks-"));
   const creds = writeCreds(deployer, secret);
+  // Production artifacts.json pins the contract team's verified build (sha b41ea881…). Wasm built in CI/other machines is not
+  // byte-identical, so tests approve the artifact they actually built, through the SAME hash-checking registry code.
+  const artifacts = join(ks, "test-artifacts.json");
+  writeFileSync(artifacts, JSON.stringify([{ id: "market-wasm", version: "1.0.0", path: resolve(MARKET_WASM), sha256: createHash("sha256").update(readFileSync(MARKET_WASM)).digest("hex"), sourceVersion: "test-build" }]));
   const cfg = loadConfig({
     DATABASE_URL: "x", NEAR_NETWORK: "sandbox", NEAR_RPC_URL: sbx.rpcUrl, KEYSTORE_DIR: ks,
     DEPLOYER_ACCOUNT: deployer.accountId, DEPLOYER_CREDENTIALS_FILE: creds, RESOLVER_ACCOUNT: deployer.accountId, RESOLVER_CREDENTIALS_FILE: creds,
     TOKEN_OWNER_ACCOUNT: deployer.accountId, TOKEN_OWNER_CREDENTIALS_FILE: creds,
-    APPROVED_ARTIFACTS_FILE: resolve(REPO, "apps/backend/artifacts.json"), ADMIN_ACCOUNTS: deployer.accountId, TX_POLL_TIMEOUT_MS: "60000",
+    APPROVED_ARTIFACTS_FILE: artifacts, ADMIN_ACCOUNTS: deployer.accountId, TX_POLL_TIMEOUT_MS: "60000",
   } as NodeJS.ProcessEnv);
   const rpc = new Rpc({ url: sbx.rpcUrl, retries: 2, backoffMs: 50 });
   const deps = makeDeps(cfg, db, rpc);

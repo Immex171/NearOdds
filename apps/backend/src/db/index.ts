@@ -12,7 +12,10 @@ export type Tx = pg.PoolClient;
 export type Q = pg.Pool | pg.PoolClient;
 
 export function createPool(url: string): Db {
-  return new pg.Pool({ connectionString: url, max: 10 });
+  const pool = new pg.Pool({ connectionString: url, max: 10 });
+  // An idle client can be terminated by the server (restart, failover, DROP DATABASE FORCE); that must not crash the process.
+  pool.on("error", (e) => console.error("[db] idle client error:", e.message));
+  return pool;
 }
 
 export async function withTx<T>(db: Db, fn: (c: Tx) => Promise<T>): Promise<T> {
